@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python --version)",
+      "PowerShell(.\\venv\\Scripts\\python.exe -m pip install *)",
+      "PowerShell(.\\venv\\Scripts\\python.exe -m pip *)",
+      "PowerShell(.\\venv\\Scripts\\python.exe -m uvicorn *)",
+      "PowerShell(.\\venv\\Scripts\\python.exe -c *)",
+      "PowerShell(.\\venv\\Scripts\\python.exe supabase_admin.py)",
+      "PowerShell(.\\venv\\Scripts\\python.exe supabase_admin.py *)",
+      "PowerShell(.\\venv\\Scripts\\python.exe drive_storage.py)",
+      "PowerShell(.\\venv\\Scripts\\python.exe drive_storage.py *)",
+      "PowerShell(Invoke-WebRequest *)",
+      "PowerShell(Rename-Item *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell(Move-Item *)",
+      "PowerShell(Get-ChildItem *)"
+    ]
+  }
+}

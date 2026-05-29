@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* 全站維持淺色設計(對應原本 static 版的 bg-slate-50),不跟系統深色模式 */
+
+/* modal 從底部滑上來,手機 App 風格(各板塊共用) */
+.modal-slide {
+  transform: translateY(100%);
+  transition: transform 0.25s ease-out;
+}
+.modal-slide.open {
+  transform: translateY(0);
+}

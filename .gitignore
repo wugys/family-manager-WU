@@ -1,0 +1,33 @@
+# Python 虛擬環境(每個人本機自己建,不進版控)
+venv/
+
+# Python 執行時自動產生的快取
+__pycache__/
+*.pyc
+*.pyo
+
+# 環境變數(裡面會放 LINE token、資料庫密碼,絕對不能 commit)
+.env
+
+# Google Service Account 金鑰(已棄用,改走 OAuth 2.0;留著不刪以防未來轉回)
+gcp-drive-service-account.json
+
+# OAuth 2.0 client secret + token(個人 Google 帳號授權,絕對不能 commit)
+oauth-client-secret.json
+drive-token.json
+
+# supabase_admin.py 的稽核 log(本機獨有,不進版控)
+logs/
+
+# SQLite 資料庫檔(開發用,內容是本機資料,不該進版控)
+*.db
+*.sqlite
+*.sqlite3
+
+# 編輯器/IDE 設定
+.vscode/
+.idea/
+
+# 作業系統暫存檔
+.DS_Store
+Thumbs.db

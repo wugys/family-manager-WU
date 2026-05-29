@@ -1,0 +1,34 @@
+# 後端 Web 框架
+fastapi
+
+# ASGI 伺服器,負責讓 FastAPI 跑起來接收網路請求
+# [standard] 代表連同推薦的附加套件一起裝(含開發時超好用的「自動重載」)
+uvicorn[standard]
+
+# LINE 官方 Python SDK,處理 LINE Messaging API 的訊息收發、簽章驗證
+line-bot-sdk
+
+# 讀取 .env 檔案,把裡面的設定載入成環境變數
+python-dotenv
+
+# Supabase 官方 Python SDK,讓後端能呼叫 Supabase REST API(用來取代記憶體假資料庫)
+# 內含 postgrest(查詢資料表)、gotrue(認證,之後做家人登入會用到)、storage(檔案)、realtime(即時通知)
+supabase
+
+# PostgreSQL 直連 adapter,讓 supabase_admin.py 能跑任意 SQL(尤其是 DDL 改 schema)
+# 用途跟 supabase-py 互補:supabase-py 走 REST API 跑 CRUD,psycopg2-binary 走原生 Postgres TCP 跑 DDL
+# -binary 表示帶預編譯 C wheel,Windows + Python 3.13 不用安裝 C 編譯器
+psycopg2-binary
+
+# Google API 認證(讓後端拿到 access token 存取 Drive)
+google-auth
+
+# Google OAuth 2.0 flow(InstalledAppFlow / Web flow,讓 Kevin 自己授權給 app)
+# 個人 Google 帳號不能用 Service Account 寫 Drive,只能走 OAuth flow
+google-auth-oauthlib
+
+# Google Drive API client(讓 drive_storage.py 能上傳 / 刪除 Drive 上的家電照片、說明書等大檔案)
+google-api-python-client
+
+# FastAPI 處理 multipart/form-data 上傳(UploadFile / File)需要這個套件
+python-multipart
