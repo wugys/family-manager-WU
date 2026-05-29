@@ -19,6 +19,7 @@ export interface ApplianceContactCreate {
   phone?: string | null; // 市話 / 座機
   mobile?: string | null; // 行動電話
   address?: string | null;
+  business_hours?: string | null; // 店家營業時間(保養資訊 / 購買店家)
   note?: string | null;
   also_maintenance?: boolean; // 購買店家是否同為保養店家
 }
@@ -38,6 +39,7 @@ export interface ApplianceContact {
   phone: string | null;
   mobile: string | null;
   address: string | null;
+  business_hours: string | null;
   note: string | null;
   also_maintenance: boolean;
   created_at: string;

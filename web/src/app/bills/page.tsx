@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { Bill } from "@/lib/bills";
+import { DateField } from "@/components/DateField";
+import { normalizeDate, formatDateWithWeekday } from "@/lib/dates";
 
 const API = "/api/bills";
 
@@ -122,7 +124,7 @@ export default function BillsPage() {
       amount: parseFloat(form.amount),
       cycle: form.cycle,
       cycle_days: form.cycle === "custom" ? parseInt(form.cycle_days) : null,
-      next_due_date: form.next_due_date,
+      next_due_date: normalizeDate(form.next_due_date),
       category: form.category.trim() || null,
       payer: form.payer.trim() || null,
       note: form.note.trim() || null,
@@ -340,14 +342,10 @@ export default function BillsPage() {
                 )}
 
                 <Field label="下次到期日" required>
-                  <input
-                    type="date"
+                  <DateField
                     required
                     value={form.next_due_date}
-                    onChange={(e) =>
-                      setForm({ ...form, next_due_date: e.target.value })
-                    }
-                    className={inputCls}
+                    onChange={(v) => setForm({ ...form, next_due_date: v })}
                   />
                 </Field>
 
@@ -503,7 +501,7 @@ function BillCard({
           </p>
           <p className="text-xs text-slate-500 mt-1">{meta}</p>
           <p className="text-xs text-slate-500 mt-0.5">
-            下次:{b.next_due_date}
+            下次:{formatDateWithWeekday(b.next_due_date)}
           </p>
           {b.note && (
             <p className="text-xs text-slate-400 mt-1">{b.note}</p>

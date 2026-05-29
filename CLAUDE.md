@@ -63,6 +63,11 @@ Kevin 明確指定、所有板塊都要遵守的規則。語言與註解風格�
 3. **Drive 檔案按板塊分子資料夾**——所有透過後端上傳的大檔案,都進 `家庭管理系統/` 父資料夾,並**按板塊名自動建子資料夾**(例:「家電管理/」、「帳單管理/」、「照片回憶/」)。呼叫 `uploadFile(buffer, filename, moduleName, mimeType)` 時,`src/lib/drive.ts` 內部會檢查同名子資料夾是否存在,沒有就建、有就重用(用 cache 避免每次都查 Drive)。**重新授權 / 重啟不會重複開新資料夾**(`findOrCreateSubfolder` 先用名字搜尋再決定建不建)。Kevin 從自己 Drive 打開父資料夾就能按板塊瀏覽所有上傳檔案
 4. 例外(例如真的需要 SQLite / 本機 cache / 第三方 API 即時資料)要 Kevin 同意才能用
 
+### 日期欄位標準(強制,所有板塊一致)
+任何「需要填日期的欄位」與「顯示日期的地方」都**必須**符合下面兩點,格式統一:
+1. **日期輸入一律用共用 `DateField` 元件**(`web/src/components/DateField.tsx`)——可直接打字(支援 `2026/4/8`、`2026.4.8`、`20260408`),旁邊永遠有 📅 從日曆挑。**禁止再用原生 `<input type="date">`**(那個只能用選的、不好打字)。打到合法日期時**欄位內容會即時變成 `2026-05-29(五)`**(年月日+星期合一)。送出前**務必**用 `normalizeDate()` 去掉星期標記再存(只存 `YYYY-MM-DD`)——所有送出路徑都要記得包,否則 `(五)` 會被寫進資料庫
+2. **顯示日期一律帶星期幾**,格式 `2026-05-29(五)`——用共用的 `formatDateWithWeekday()`(`web/src/lib/dates.ts`)。日期工具(`normalizeDate` / `formatDateWithWeekday` / `weekdayLabel`)全放 `src/lib/dates.ts`(純函式、client/server 皆可 import),不要每個板塊各複製一份
+
 ### 安全規範(Supabase / 金鑰)
 1. **Supabase secret key 只在 server 端用**——`SUPABASE_URL` / `SUPABASE_SECRET_KEY` 放 `web/.env.local`,**環境變數名稱不可加 `NEXT_PUBLIC_` 前綴**(加了會被打包進前端、洩漏 secret key)
 2. **領域檔 / route handler 是 server-only**——`src/lib/*.ts`(連 Supabase / Drive)、`src/app/api/**/route.ts` 都跑在 server,client 元件(`page.tsx`)只能 `import type` 它們的型別,不可 import 函式
@@ -88,7 +93,7 @@ family-manager/
 │   ├── AGENTS.md                  # Next.js 16 警告(寫程式前讀 docs)
 │   └── package.json
 ├── drive-token.json              # Drive OAuth token(refresh_token,不 commit)
-├── authorize_drive.py            # 一次性:重新取得 Drive OAuth token(7 天過期時跑)
+├── authorize_drive.py            # 重新取得 Drive OAuth token(已發布 Production 不會過期,萬一壞了才跑)
 ├── supabase_admin.py             # DDL 工具(psycopg2,有破壞性操作黑名單)
 ├── supabase_schema.sql           # 建表 SQL 紀錄
 └── .claude/skills/
@@ -198,12 +203,13 @@ family-manager/
 - ✅ **採購清單**:`lib/shopping.ts`(`is_bought` 變化自動填 `bought_at`)+ `/api/shopping` + `clear-bought` + `shopping/page.tsx`
 - ✅ **家人通訊錄**:`lib/contacts.ts` + `/api/contacts` + `contacts/page.tsx`(頭像漸層、生日提醒、tel/line/mailto 動作鍵)
 - ✅ **家電管理(已強化)**:`lib/appliances.ts`(雙表 `appliances` + `appliance_tasks`,FK cascade,`markTaskDone` 自動推進下次日期)+ `lib/drive.ts`(Google Drive 上傳:OAuth2、子資料夾歸檔)+ `/api/appliances` + `/api/appliance-tasks` + `appliances/page.tsx`(modal 內任務子清單、保固徽章)
-  - **聯絡資訊**:獨立成 `appliance_contacts` 分類別子表(category = 耗材連結 / 保養資訊 / 購買店家,欄位依類別切換)→ `lib/applianceContacts.ts` + `/api/appliance-contacts`
-  - **名片拍照 OCR 自動填表**:Google Vision API(純 fetch + `GOOGLE_VISION_API_KEY`,無 npm 套件)→ `/api/vision-ocr`;抽店家/聯絡人/電話/地址回填空欄
+  - **聯絡資訊**:獨立成 `appliance_contacts` 分類別子表(category = 耗材連結 / 保養資訊 / 購買店家,欄位依類別切換)→ `lib/applianceContacts.ts` + `/api/appliance-contacts`。保養資訊 / 購買店家含「店家營業時間 `business_hours`」欄位
+  - **聯絡資訊價目表上傳**:店家(子物件)底下可傳價目表照片(可預覽)→ 子物件的子表 `appliance_contact_files`(kind = pricelist,FK `contact_id` cascade)+ 共用 `MultiUpload` → `lib/applianceContactFiles.ts` + `/api/appliance-contact-files`;Drive 命名 `家電名稱-店家名稱-價目表-原檔名`。**先存聯絡資訊、再回編輯才能上傳**(新增中無 id)
+  - **名片拍照辨識自動填表**:改用 **Google Gemini**(`gemini-2.5-flash`,純 fetch + `GEMINI_API_KEY`,無 npm 套件)直接「看圖」回結構化 JSON → `/api/vision-ocr`(route 名沿用,內部已換 Gemini);抽店家/聯絡人/電話/地址/備註,OCR 結果優先覆蓋。比舊版 Vision+正則準很多
   - **多檔上傳(全新標準)**:獨立 `appliance_files` 子表(kind = photo / manual / receipt)+ `MultiUpload` 元件(Ctrl+V 貼上、縮圖列表、多檔)→ `lib/applianceFiles.ts` + `/api/appliance-files`;取代舊的 `photo_url`/`manual_url` 單欄。**此為所有板塊上傳區強制標準**(見「上傳區標準」段)
   - **保固分頁**:加收據上傳(歸檔 `家電名稱-購買收據-原檔名`)+ 保固備註
   - **區域篩選列**:狀態列下方加動態 chips 篩選列(選項由 `location` 自動長出、與狀態列視覺分開)
-  - 📌 跨板塊可重用樣式已萃取成 skill:`.claude/skills/patterns-rich-ui/`(OCR 自動填表 / 多檔上傳 / 分類別子表 / 動態篩選列)
+  - 📌 跨板塊可重用樣式已萃取成 skill:`.claude/skills/patterns-rich-ui/`(OCR/Gemini 自動填表 / 多檔上傳〔含掛在子物件底下〕/ 分類別子表〔含事後加欄位〕/ 動態篩選列 / 長字串溢出修法)
 - ✅ **主頁**:`page.tsx` + `lib/modules.ts`,17 個板塊卡片(4 已啟用、13 規劃中)
 
 **17 個板塊規劃(已啟用 4、規劃中 13)**
@@ -214,19 +220,18 @@ family-manager/
 
 **外部整合狀態**
 - ✅ Supabase 已接通:`SUPABASE_URL` + `SUPABASE_SECRET_KEY` 在 `web/.env.local`(bills / shopping / contacts / appliances / appliance_tasks / appliance_contacts / appliance_files 等表已建好)
-- ✅ Google Vision API 已接通:`GOOGLE_VISION_API_KEY` 在 `web/.env.local`(server-only,名片 OCR 用)
+- ✅ Google Gemini API 已接通:`GEMINI_API_KEY` 在 `web/.env.local`(server-only,名片辨識自動填表用,`gemini-2.5-flash`,免費額度)。舊的 `GOOGLE_VISION_API_KEY` 已不再使用
 - ✅ Google Drive 已接通:`drive-token.json`(OAuth2 + refresh_token),家電板塊可從系統內多檔上傳照片/說明書/收據,自動歸檔到 `家庭管理系統/家電管理/`
-  - ⚠️ OAuth consent 在 **Testing** 模式 → `refresh_token` **7 天過期**。過期後跑 `authorize_drive.py` 重新授權即可(不會開新資料夾);永久解法是把 app 發布到 Production
+  - ✅ OAuth consent 已發布到 **Production**(2026-05-30)→ `refresh_token` 不再 7 天過期(永久解)。發布是免費的,只有送驗證(CASA)才收費、家用不需要。萬一 token 真的壞了仍可跑 `authorize_drive.py` 重新授權(不會開新資料夾)
 
 **下一步候選**
 1. 多做一個規劃中的板塊(單表套 bills/contacts 模板;雙表 + 上傳套 appliances 模板)
 2. 深化現有板塊(帳單標已繳推進到期日、家電保固快到期提醒、採購複製上次清單等)
-3. 把 Drive OAuth app 發布到 Production(永久解 7 天過期)
-4. 開放給家人(本機 WiFi 或部署)
-5. 處理 LINE webhook(需先有 ngrok)
+3. 開放給家人(本機 WiFi 或部署)
+4. 處理 LINE webhook(需先有 ngrok)
 
 **已知狀態 / 小坑**
 - Next.js 16 有破壞性變更:route `params` 是 async、寫前讀 `web/AGENTS.md`
 - PowerShell 每個指令是獨立 process;dev server 用 `run_in_background` 啟動、保持在跑
 - PowerShell 輸出中文常顯示亂碼(編碼問題),實際資料正常,瀏覽器顯示正確即可
-- Drive token 7 天過期(Testing 模式),見上方外部整合狀態
+- Drive OAuth 已發布 Production,token 不再 7 天過期(見上方外部整合狀態)

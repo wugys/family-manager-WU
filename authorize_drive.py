@@ -15,9 +15,13 @@
     - testing 階段:refresh token 每 7 天過期,過期就重跑這支
     - 解法:授權後到 Google Cloud → OAuth consent screen 點「PUBLISH APP」轉「In production」
 """
+import sys
 from pathlib import Path
 
 from google_auth_oauthlib.flow import InstalledAppFlow
+
+# Windows 終端機預設 cp950 編碼吃不下中文/emoji,強制改用 utf-8 避免印訊息時崩潰
+sys.stdout.reconfigure(encoding="utf-8")
 
 # Drive 完整存取(讀寫刪)
 SCOPES = ["https://www.googleapis.com/auth/drive"]

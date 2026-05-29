@@ -1,106 +1,52 @@
-// 名片掃描 OCR:POST 一張圖片 → 呼叫 Google Cloud Vision REST API 辨識文字。
-//   前端用 <input capture> 拍照後把圖片傳來,這裡 base64 後送 Vision。
-//   盡力解析出:店家名稱 name、聯絡人 contact_person、市話 phone、行動電話 mobile、
-//   地址 address、濃縮備註 note,讓前端自動填欄位。
-// 金鑰放 .env.local 的 GOOGLE_VISION_API_KEY(server-only,不加 NEXT_PUBLIC_)。
+// 名片掃描:POST 一張名片圖片 → 直接交給 Google Gemini「看圖」,
+//   回傳結構化欄位(店家名稱 / 聯絡人 / 市話 / 行動電話 / 地址 / 備註 / 原始文字),讓前端自動填表。
+//   比舊版「Vision OCR + 正則猜」準很多——Gemini 真的讀懂名片版型。
+// 金鑰放 .env.local 的 GEMINI_API_KEY(server-only,不加 NEXT_PUBLIC_)。
 import { NextResponse } from "next/server";
 
-const VISION_URL = "https://vision.googleapis.com/v1/images:annotate";
+// 用 flash 版:夠準、便宜、有免費額度;要換模型改這一行即可
+const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-// 全形數字 → 半形(名片常出現全形)
-function toHalfWidth(s: string): string {
-  return s.replace(/[０-９]/g, (d) =>
-    String.fromCharCode(d.charCodeAt(0) - 0xfee0),
-  );
-}
+// 要 Gemini 抽出的欄位(逼它回乾淨 JSON,不夾雜說明文字)
+const RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string" }, // 公司 / 店家名稱(完整全名)
+    contact_person: { type: "string" }, // 聯絡人姓名(純人名,不含職稱)
+    phone: { type: "string" }, // 市話
+    mobile: { type: "string" }, // 行動電話
+    address: { type: "string" }, // 地址
+    note: { type: "string" }, // 其他重要資訊濃縮(職稱、營業項目、Email、網址…)
+    text: { type: "string" }, // 名片上所有可見文字,原樣列出
+  },
+  required: [
+    "name",
+    "contact_person",
+    "phone",
+    "mobile",
+    "address",
+    "note",
+    "text",
+  ],
+};
 
-// 行動電話格式化:09xxxxxxxx → 09NN-NNN-NNN
-function formatMobile(digits: string): string {
-  return `${digits.slice(0, 4)}-${digits.slice(4, 7)}-${digits.slice(7, 10)}`;
-}
-
-// 市話格式化:區碼 + 號碼 → 02-NNNN-NNNN / 03N-NNN-NNNN…
-function formatLandline(area: string, rest: string): string {
-  if (rest.length === 8) return `${area}-${rest.slice(0, 4)}-${rest.slice(4)}`;
-  if (rest.length === 7) return `${area}-${rest.slice(0, 3)}-${rest.slice(3)}`;
-  return `${area}-${rest}`;
-}
-
-// 抓行動電話(09 開頭 10 碼)
-function extractMobile(text: string): string | null {
-  const m = text.match(/09\d{2}[-\s.]?\d{3}[-\s.]?\d{3}/);
-  if (!m) return null;
-  const d = m[0].replace(/\D/g, "");
-  return d.length === 10 ? formatMobile(d) : null;
-}
-
-// 抓市話(區碼 02/03/037/039/04/049/05/06/07/08/089 + 7~8 碼)
-function extractLandline(text: string): string | null {
-  // 長區碼放前面,避免 0 + 3 先匹配掉 037
-  const m = text.match(
-    /\(?0(89|37|39|49|2|3|4|5|6|7|8)\)?[-\s.]*(\d{3,4})[-\s.]*(\d{3,4})/,
-  );
-  if (!m) return null;
-  const area = "0" + m[1];
-  const rest = (m[2] + m[3]).replace(/\D/g, "");
-  return formatLandline(area, rest);
-}
-
-// 抓地址(含縣市區 + 路街號樓等特徵的那一行)
-function extractAddress(lines: string[]): string | null {
-  const hit = lines.find(
-    (l) => /[縣市區鄉鎮]/.test(l) && /(路|街|大道|巷|弄|號|樓)/.test(l),
-  );
-  return hit ? hit.replace(/\s+/g, "") : null;
-}
-
-// 抓店家 / 公司名稱(含公司行號特徵字的那一行)
-function extractCompany(lines: string[]): string | null {
-  const hit = lines.find((l) =>
-    /(股份有限公司|有限公司|公司|企業|實業|商行|工作室|通訊|事務所|診所|藥局|電器|家電|工程行|行$)/.test(
-      l,
-    ),
-  );
-  return hit ? hit.slice(0, 40) : null;
-}
-
-const TITLE_RE =
-  /(董事長|總經理|區經理|副理|協理|襄理|經理|主任|專員|業務|顧問|工程師|店長|負責人|課長|主管|代表|執行長|總監)/;
-
-// 抓聯絡人(職稱附近的 2~4 個中文字)
-function extractPerson(lines: string[]): string | null {
-  for (const l of lines) {
-    const m = l.match(TITLE_RE);
-    if (!m) continue;
-    const compact = l.replace(/\s/g, "");
-    const idx = compact.indexOf(m[0]);
-    const after = compact.slice(idx + m[0].length).match(/^[一-龥]{2,4}/);
-    if (after) return after[0];
-    const before = compact.slice(0, idx).match(/[一-龥]{2,4}$/);
-    if (before) return before[0];
-  }
-  return null;
-}
-
-// 濃縮備註:挑出沒被其他欄位用到、又有意義的中文行(去掉電話/地址),最多 60 字
-function condenseNote(lines: string[], company: string | null): string | null {
-  const kept = lines.filter((l) => {
-    if (company && l.includes(company)) return false;
-    if (/(路|街|大道|巷|弄|號|樓)/.test(l)) return false; // 地址行
-    const digits = l.replace(/\D/g, "");
-    if (digits.length >= 7) return false; // 電話行
-    if (!/[一-龥]/.test(l)) return false; // 沒中文(email/網址)略過
-    return true;
-  });
-  const joined = [...new Set(kept)].join(" ").trim().slice(0, 60);
-  return joined || null;
-}
+const PROMPT = `你是名片資訊辨識助手。請仔細辨識這張名片圖片上的「所有」資訊,不要遺漏任何細節。
+依下列規則抽取欄位(找不到的欄位一律回空字串 ""):
+- name:公司 / 店家名稱,要完整全名(例:全球人壽保險股份有限公司)。
+- contact_person:聯絡人的「人名」,只要姓名本身,不要含職稱(例:倪詔諡,不是「倪詔諡 區經理」)。
+- phone:市話(含區碼),保留易讀格式如 02-6613-8709。
+- mobile:行動電話(09 開頭),格式如 0921-990-018。
+- address:完整地址。
+- note:其他重要資訊,「每一項各自一行」(用換行符號 \n 分隔),例如職稱、頭銜、營業項目、Email、網址、LINE ID、傳真等,每行一項,不要全部擠成一行。
+- text:把名片上看得到的所有文字原樣列出(可換行)。
+特別注意:務必正確區分「人名」與「公司名」,不要把公司名填進聯絡人、也不要把職稱當成人名。`;
 
 export async function POST(request: Request) {
-  const apiKey = process.env.GOOGLE_VISION_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { detail: "尚未設定 GOOGLE_VISION_API_KEY(請在 .env.local 填入金鑰)" },
+      { detail: "尚未設定 GEMINI_API_KEY(請在 .env.local 填入金鑰)" },
       { status: 500 },
     );
   }
@@ -112,52 +58,55 @@ export async function POST(request: Request) {
     }
     const buffer = Buffer.from(await file.arrayBuffer());
     const base64 = buffer.toString("base64");
+    const mimeType = file.type || "image/jpeg";
 
-    const res = await fetch(`${VISION_URL}?key=${apiKey}`, {
+    const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        requests: [
+        contents: [
           {
-            image: { content: base64 },
-            features: [{ type: "TEXT_DETECTION" }],
-            imageContext: { languageHints: ["zh-Hant", "en"] },
+            parts: [
+              { text: PROMPT },
+              { inline_data: { mime_type: mimeType, data: base64 } },
+            ],
           },
         ],
+        generationConfig: {
+          responseMimeType: "application/json",
+          responseSchema: RESPONSE_SCHEMA,
+          temperature: 0, // 辨識任務,要穩定不要發揮
+        },
       }),
     });
 
     const data = await res.json();
     if (!res.ok) {
-      const msg = data?.error?.message || `Vision HTTP ${res.status}`;
+      const msg = data?.error?.message || `Gemini HTTP ${res.status}`;
       return NextResponse.json({ detail: msg }, { status: 502 });
     }
-    const r = data?.responses?.[0];
-    if (r?.error) {
+
+    // Gemini 把 JSON 字串放在 candidates[0].content.parts[0].text
+    const jsonText: string =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    let parsed: Record<string, string> = {};
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
       return NextResponse.json(
-        { detail: r.error.message || "辨識失敗" },
+        { detail: "Gemini 回傳格式無法解析,請重拍一張清楚的名片" },
         { status: 502 },
       );
     }
 
-    const rawText: string =
-      r?.fullTextAnnotation?.text || r?.textAnnotations?.[0]?.description || "";
-    const text = toHalfWidth(rawText);
-    const lines = text
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-
-    const company = extractCompany(lines);
-
     return NextResponse.json({
-      text: rawText,
-      name: company,
-      contact_person: extractPerson(lines),
-      phone: extractLandline(text),
-      mobile: extractMobile(text),
-      address: extractAddress(lines),
-      note: condenseNote(lines, company),
+      text: parsed.text || "",
+      name: parsed.name || "",
+      contact_person: parsed.contact_person || "",
+      phone: parsed.phone || "",
+      mobile: parsed.mobile || "",
+      address: parsed.address || "",
+      note: parsed.note || "",
     });
   } catch (e) {
     return NextResponse.json(

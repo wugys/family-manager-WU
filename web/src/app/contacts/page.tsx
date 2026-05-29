@@ -1,9 +1,11 @@
 "use client";
 
 // 家人通訊錄頁(對應原本 static/contacts.html)
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { Contact } from "@/lib/contacts";
+import { DateField } from "@/components/DateField";
+import { normalizeDate } from "@/lib/dates";
 
 const API = "/api/contacts";
 
@@ -47,20 +49,6 @@ function getBirthdayInfo(birthday: string): { text: string; urgent: boolean } {
   return { text: dateText, urgent: false };
 }
 
-// 接受多種生日輸入格式,normalize 成 YYYY-MM-DD;失敗回原值
-function normalizeDate(s: string): string {
-  if (!s) return "";
-  s = s.trim();
-  if (/^\d{8}$/.test(s)) {
-    return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
-  }
-  const m = s.match(/^(\d{4})[-/. ](\d{1,2})[-/. ](\d{1,2})$/);
-  if (m) {
-    return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-  }
-  return s;
-}
-
 // 表單欄位的初始空值
 type FormState = {
   id: number | null;
@@ -97,7 +85,6 @@ export default function ContactsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
-  const birthdayPickerRef = useRef<HTMLInputElement>(null);
 
   async function loadContacts() {
     try {
@@ -145,15 +132,6 @@ export default function ContactsPage() {
   function closeModal() {
     setModalVisible(false);
     setTimeout(() => setModalOpen(false), 250);
-  }
-
-  function openBirthdayPicker() {
-    const picker = birthdayPickerRef.current;
-    if (!picker) return;
-    const current = normalizeDate(form.birthday);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(current)) picker.value = current;
-    if (typeof picker.showPicker === "function") picker.showPicker();
-    else picker.click();
   }
 
   async function submitForm(e: React.FormEvent) {
@@ -368,42 +346,11 @@ export default function ContactsPage() {
                       <label className="block text-sm font-medium mb-1">
                         生日
                       </label>
-                      <div className="flex gap-1">
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          maxLength={10}
-                          placeholder="1985-05-15"
-                          value={form.birthday}
-                          onChange={(e) =>
-                            setForm({ ...form, birthday: e.target.value })
-                          }
-                          onBlur={(e) => {
-                            const v = normalizeDate(e.target.value);
-                            if (/^\d{4}-\d{2}-\d{2}$/.test(v))
-                              setForm((f) => ({ ...f, birthday: v }));
-                          }}
-                          className="flex-1 min-w-0 border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                        <button
-                          type="button"
-                          onClick={openBirthdayPicker}
-                          className="px-2 bg-slate-100 hover:bg-slate-200 active:scale-95 rounded-lg text-lg shrink-0"
-                          title="從日曆選"
-                        >
-                          📅
-                        </button>
-                        <input
-                          ref={birthdayPickerRef}
-                          type="date"
-                          className="absolute opacity-0 pointer-events-none"
-                          tabIndex={-1}
-                          aria-hidden="true"
-                          onChange={(e) =>
-                            setForm((f) => ({ ...f, birthday: e.target.value }))
-                          }
-                        />
-                      </div>
+                      <DateField
+                        value={form.birthday}
+                        placeholder="1985-05-15"
+                        onChange={(v) => setForm({ ...form, birthday: v })}
+                      />
                     </div>
                     <div>
                       <label className="block text-sm font-medium mb-1">

@@ -96,6 +96,14 @@ create index if not exists idx_<module>_files_parent on <module>_files(<parent>_
 
 **踩過的坑**:cascade **不會**清 Drive 的實體檔,刪主物件 / 刪單檔都要自己呼叫 `deleteFileByUrl`。
 
+### 變化型:把上傳區掛在「子物件」底下(子物件的子物件)
+
+家電聯絡資訊(店家)底下要傳「價目表」照片 → 檔案掛在 **`appliance_contacts`(子物件)** 而不是 `appliances`。做法跟上面一樣,只是 FK 指向子表:`appliance_contact_files(contact_id FK on delete cascade, kind, url, name, created_at)`、領域檔 `applianceContactFiles.ts`、API `/api/appliance-contact-files`。實作參考檔已 commit。三個關鍵差異:
+
+1. **Drive 命名可多帶一層父名**:Kevin 選的格式是 `<家電名稱>-<店家名稱>-價目表-<原檔名>`。route 內先 `getContact(contactId)` 拿店家名 + `appliance_id`,再 `getAppliance()` 拿家電名,兩個都 `.replace(/[/\\]/g,"-")` 防破壞路徑。
+2. **「先存父、再傳檔」UX(重要)**:新增中的子物件還沒 `id`,檔案無處可掛。所以價目表上傳區**只在編輯既有聯絡資訊(`editingContactId > 0`)時 render**;`editingContactId === 0`(新增中)改顯示提示文字「請先儲存這筆,再回來編輯即可上傳」。別讓使用者對著還沒存的表單傳檔。
+3. **`MultiUpload` 的 `files` prop 型別放寬就能共用**:原本寫死 `ApplianceFile[]`,改成只取用到的欄位 `{ id:number; url:string; name:string|null }[]`,家電檔案與聯絡資訊檔案兩種型別都吃得下,元件零改動重用。Ctrl+V 也照樣做一個 scoped paste effect(deps 放 `editingContactId`),貼上的圖丟給該 contact;唯讀卡片(`Row`)也可把該物件的圖縮圖列出來當預覽(同一招 `drive.google.com/thumbnail?id=`)。
+
 ---
 
 ## 樣式 3:分類別子表（一主物件掛多筆，各帶 category）
@@ -122,6 +130,17 @@ create table if not exists <module>_contacts (
 **前端**:表單最上面一個「類別」select,下方欄位**用 `category` 條件 render**(`{form.category === "耗材連結" ? <連結欄位/> : <店家欄位/>}`);送出時依類別把不相干欄位送 null。列表用一個 `Row` 元件,類別用色票徽章區分。
 
 **心法**:不要為每個類別開一張表 —— 共用一張 + category 欄位最省,欄位聯集即可。
+
+### 事後加一個新欄位(全套要動的 5 個地方)
+
+對既有分類別子表加欄位(範例:給保養資訊 / 購買店家加「店家營業時間 `business_hours`」),一條龍要改這 5 處,漏一處型別或顯示就會缺:
+1. **DDL**:`ALTER TABLE <module>_contacts ADD COLUMN IF NOT EXISTS business_hours text;`(直接用 `supabase_admin.py` 跑)
+2. **領域檔型別**:`<Name>Create`(`field?: string | null`)+ `<Name>`(`field: string | null`)兩個 interface 都加
+3. **前端 Form 型別 + emptyForm**:`ContactForm` 加 `business_hours: string`、`emptyContactForm` 給 `""`
+4. **open / submit 兩條路**:`openEditContact` 帶入 `c.business_hours ?? ""`;`submitContactForm` 送 `isUrl ? null : form.business_hours.trim() || null`(只在該類別存)
+5. **顯示卡**:`Row` 元件加一行(`{!isUrl && c.business_hours && <p>🕐 {c.business_hours}</p>}`)
+
+跑完 `npx tsc --noEmit`,少改任何一處型別會立刻報錯,當 checklist 用。
 
 ---
 
@@ -154,3 +173,8 @@ const locationOptions = Array.from(
 4. **route.ts / page.tsx 改動靠 hot-reload**,不用重啟;**只有改 `.env.local` / 裝套件 / server 掛了**才重啟一次。
 5. **Kevin 只驗兩件事**:網頁是否如預期顯示 + 文字資料是否進 Supabase。中間 SQL / 程式碼不用先給他看點頭。
 6. **不啦啦隊**:自己做的簡化(OCR 抓不準、頭貼用第一張、kindLabel 拍板…)主動標出讓他反對。
+7. **使用者填的長字串會撐破卡片**:顯示使用者輸入(備註、網址、貼上的 Google 表單連結等)的 `<p>` 一定要加 `break-words`(配 `whitespace-pre-wrap` 保留換行);純連結用 `break-all`。少了它,一條沒空格的長 URL 會把整張卡片撐出框。
+
+## 對話 / 語言規則(Kevin 明確要求)
+
+跟 Kevin 的對話框**只能用中文(繁中為主)和英文**,禁止其他語言(尤其日文)——含一般回覆、`AskUserQuestion` 的 question / option label、程式碼註解。寫 `AskUserQuestion` 選項時特別留意別讓非 ASCII 字串被編成日文。

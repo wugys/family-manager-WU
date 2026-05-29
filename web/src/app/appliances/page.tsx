@@ -7,11 +7,15 @@ import Link from "next/link";
 import type { Appliance, ApplianceTask } from "@/lib/appliances";
 import type { ApplianceContact } from "@/lib/applianceContacts";
 import type { ApplianceFile, FileKind } from "@/lib/applianceFiles";
+import type { ApplianceContactFile } from "@/lib/applianceContactFiles";
+import { DateField } from "@/components/DateField";
+import { normalizeDate, formatDateWithWeekday } from "@/lib/dates";
 
 const API_APPLIANCES = "/api/appliances";
 const API_TASKS = "/api/appliance-tasks";
 const API_CONTACTS = "/api/appliance-contacts";
 const API_FILES = "/api/appliance-files";
+const API_CONTACT_FILES = "/api/appliance-contact-files";
 const API_OCR = "/api/vision-ocr";
 
 const TASK_TYPE_OPTIONS = ["清潔", "保養", "耗材更換", "其他"];
@@ -48,20 +52,6 @@ function isInWarranty(a: Appliance): boolean {
   if (a.out_of_warranty) return false; // 手動標過保 → 不算保固中
   const d = daysFromToday(a.warranty_until);
   return d !== null && d >= 0;
-}
-
-// 把使用者打的日期正規化成 YYYY-MM-DD(支援 2026/4/8、20260408 等)
-function normalizeDate(s: string): string {
-  if (!s) return "";
-  s = s.trim();
-  if (/^\d{8}$/.test(s)) {
-    return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
-  }
-  const m = s.match(/^(\d{4})[-/. ](\d{1,2})[-/. ](\d{1,2})$/);
-  if (m) {
-    return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
-  }
-  return s;
 }
 
 // 購買日 + 保固期(年 / 月)→ 算出保固到期日(YYYY-MM-DD);用本地時間避免時區位移
@@ -151,6 +141,7 @@ type ContactForm = {
   phone: string; // 市話
   mobile: string; // 行動電話
   address: string;
+  business_hours: string; // 店家營業時間
   note: string;
   also_maintenance: boolean; // 購買店家是否同為保養店家
 };
@@ -163,6 +154,7 @@ const emptyContactForm: ContactForm = {
   phone: "",
   mobile: "",
   address: "",
+  business_hours: "",
   note: "",
   also_maintenance: false,
 };
@@ -207,6 +199,11 @@ export default function AppliancesPage() {
   const [contactsByAppliance, setContactsByAppliance] = useState<
     Record<number, ApplianceContact[]>
   >({});
+  // 每筆聯絡資訊底下的檔案(目前只有價目表),依 contact_id 分組
+  const [contactFilesByContact, setContactFilesByContact] = useState<
+    Record<number, ApplianceContactFile[]>
+  >({});
+  const [contactUploading, setContactUploading] = useState(false);
   // null = 不在編輯;0 = 新增中;>0 = 正在編輯該 id 的聯絡資訊
   const [editingContactId, setEditingContactId] = useState<number | null>(null);
   const [contactForm, setContactForm] = useState<ContactForm>(emptyContactForm);
@@ -220,20 +217,23 @@ export default function AppliancesPage() {
 
   const loadAppliances = useCallback(async () => {
     try {
-      const [aRes, tRes, cRes, fRes] = await Promise.all([
+      const [aRes, tRes, cRes, fRes, cfRes] = await Promise.all([
         fetch(API_APPLIANCES),
         fetch(API_TASKS),
         fetch(API_CONTACTS),
         fetch(API_FILES),
+        fetch(API_CONTACT_FILES),
       ]);
       if (!aRes.ok) throw new Error("家電 HTTP " + aRes.status);
       if (!tRes.ok) throw new Error("任務 HTTP " + tRes.status);
       if (!cRes.ok) throw new Error("聯絡資訊 HTTP " + cRes.status);
       if (!fRes.ok) throw new Error("檔案 HTTP " + fRes.status);
+      if (!cfRes.ok) throw new Error("聯絡資訊檔案 HTTP " + cfRes.status);
       const aList: Appliance[] = await aRes.json();
       const allTasks: ApplianceTask[] = await tRes.json();
       const allContacts: ApplianceContact[] = await cRes.json();
       const allFiles: ApplianceFile[] = await fRes.json();
+      const allContactFiles: ApplianceContactFile[] = await cfRes.json();
 
       const byAppliance: Record<number, ApplianceTask[]> = {};
       allTasks.forEach((t) => {
@@ -247,10 +247,15 @@ export default function AppliancesPage() {
       allFiles.forEach((f) => {
         (filesByApp[f.appliance_id] ||= []).push(f);
       });
+      const contactFilesByCt: Record<number, ApplianceContactFile[]> = {};
+      allContactFiles.forEach((f) => {
+        (contactFilesByCt[f.contact_id] ||= []).push(f);
+      });
       setAppliances(aList);
       setTasksByAppliance(byAppliance);
       setContactsByAppliance(contactsByApp);
       setFilesByAppliance(filesByApp);
+      setContactFilesByContact(contactFilesByCt);
     } catch (e) {
       alert("載入失敗:" + (e instanceof Error ? e.message : e));
     } finally {
@@ -351,6 +356,7 @@ export default function AppliancesPage() {
       phone: c.phone ?? "",
       mobile: c.mobile ?? "",
       address: c.address ?? "",
+      business_hours: c.business_hours ?? "",
       note: c.note ?? "",
       also_maintenance: c.also_maintenance ?? false,
     });
@@ -371,6 +377,7 @@ export default function AppliancesPage() {
       phone: isUrl ? null : contactForm.phone.trim() || null,
       mobile: isUrl ? null : contactForm.mobile.trim() || null,
       address: isUrl ? null : contactForm.address.trim() || null,
+      business_hours: isUrl ? null : contactForm.business_hours.trim() || null,
       note: contactForm.note.trim() || null,
       also_maintenance:
         contactForm.category === "購買店家" ? contactForm.also_maintenance : false,
@@ -445,15 +452,16 @@ export default function AppliancesPage() {
         alert("掃描失敗:" + JSON.stringify(data.detail));
         return;
       }
-      // 把辨識到的店家名稱/聯絡人/市話/行動電話/地址/濃縮備註自動填入(空欄才填,不蓋掉你已打的)
+      // 把辨識到的店家名稱/聯絡人/市話/行動電話/地址/濃縮備註自動填入。
+      // 以名片辨識結果為主(覆蓋舊值);名片沒抓到的欄位才保留你原本填的。
       setContactForm((f) => ({
         ...f,
-        name: f.name || data.name || "",
-        contact_person: f.contact_person || data.contact_person || "",
-        phone: f.phone || data.phone || "",
-        mobile: f.mobile || data.mobile || "",
-        address: f.address || data.address || "",
-        note: f.note || data.note || "",
+        name: data.name || f.name || "",
+        contact_person: data.contact_person || f.contact_person || "",
+        phone: data.phone || f.phone || "",
+        mobile: data.mobile || f.mobile || "",
+        address: data.address || f.address || "",
+        note: data.note || f.note || "",
       }));
       if (!data.name && !data.phone && !data.mobile && !data.address) {
         alert(
@@ -605,6 +613,56 @@ export default function AppliancesPage() {
     await loadAppliances();
   }
 
+  // ===== 聯絡資訊檔案(價目表)上傳 / 刪除 =====
+  // 綁在某筆已存的聯絡資訊(contactId)底下,可多檔;送到 /api/appliance-contact-files
+  const uploadContactFiles = useCallback(
+    async (
+      contactId: number,
+      files: FileList | File[] | null | undefined,
+    ) => {
+      const list = files ? Array.from(files) : [];
+      if (list.length === 0) return;
+      setContactUploading(true);
+      try {
+        for (const file of list) {
+          const formData = new FormData();
+          formData.append("contact_id", String(contactId));
+          formData.append("kind", "pricelist");
+          formData.append("file", file);
+          const res = await fetch(API_CONTACT_FILES, {
+            method: "POST",
+            body: formData,
+          });
+          if (!res.ok) {
+            const err = await res
+              .json()
+              .catch(() => ({ detail: "HTTP " + res.status }));
+            alert("上傳失敗:" + JSON.stringify(err.detail));
+            break;
+          }
+        }
+        await loadAppliances();
+      } catch (e) {
+        alert("網路錯誤:" + (e instanceof Error ? e.message : e));
+      } finally {
+        setContactUploading(false);
+      }
+    },
+    [loadAppliances],
+  );
+
+  async function removeContactFile(id: number) {
+    if (!confirm("確定要刪除這張價目表嗎?")) return;
+    const res = await fetch(`${API_CONTACT_FILES}/${id}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      alert("刪除失敗");
+      return;
+    }
+    await loadAppliances();
+  }
+
   // ===== Ctrl+V 貼截圖上傳 =====
   // 貼上的圖片丟到「目前作用中的上傳區」(activeUploadKind,滑鼠移到該區時設定);
   // 一次可貼多張。只在編輯檢視有上傳區。
@@ -632,6 +690,29 @@ export default function AppliancesPage() {
     return () => document.removeEventListener("paste", onPaste);
   }, [modalOpen, modalMode, modalApplianceId, activeUploadKind, uploadFiles]);
 
+  // ===== Ctrl+V 貼圖到「價目表」上傳區 =====
+  // 只在編輯既有聯絡資訊(editingContactId > 0)時有效——新增中的還沒 contact_id,無法掛檔
+  useEffect(() => {
+    if (!editingContactId || editingContactId <= 0) return;
+    const contactId = editingContactId;
+    function onPaste(e: ClipboardEvent) {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imgs: File[] = [];
+      for (const item of items) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (f) imgs.push(f);
+        }
+      }
+      if (imgs.length === 0) return;
+      e.preventDefault();
+      uploadContactFiles(contactId, imgs);
+    }
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [editingContactId, uploadContactFiles]);
+
   // ===== 任務操作 =====
   async function submitTaskForm(e: React.FormEvent) {
     e.preventDefault();
@@ -645,7 +726,7 @@ export default function AppliancesPage() {
       name: taskForm.name.trim(),
       task_type: taskForm.task_type.trim() || null,
       cycle_days: cycle === "" ? null : parseInt(cycle, 10),
-      last_done_date: taskForm.last_done_date || null,
+      last_done_date: normalizeDate(taskForm.last_done_date) || null,
       note: taskForm.note.trim() || null,
     };
     try {
@@ -1309,6 +1390,18 @@ export default function AppliancesPage() {
                                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="店家地址"
                               />
+                              <input
+                                maxLength={100}
+                                value={contactForm.business_hours}
+                                onChange={(e) =>
+                                  setContactForm({
+                                    ...contactForm,
+                                    business_hours: e.target.value,
+                                  })
+                                }
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="營業時間(例:週一~五 09:00-18:00)"
+                              />
                               {contactForm.category === "購買店家" && (
                                 <label className="flex items-center gap-2 py-1">
                                   <input
@@ -1343,11 +1436,34 @@ export default function AppliancesPage() {
                                   handleScanFile(e.target.files?.[0])
                                 }
                               />
+
+                              {/* 價目表上傳區:只在編輯既有店家時出現(新增中還沒 id 無法掛檔) */}
+                              {editingContactId && editingContactId > 0 ? (
+                                <MultiUpload
+                                  label="價目表"
+                                  accept="image/*,application/pdf"
+                                  files={
+                                    contactFilesByContact[editingContactId] ??
+                                    []
+                                  }
+                                  uploading={contactUploading}
+                                  onActivate={() => {}}
+                                  onUpload={(files) =>
+                                    uploadContactFiles(editingContactId, files)
+                                  }
+                                  onDelete={removeContactFile}
+                                />
+                              ) : (
+                                <p className="text-xs text-slate-400 px-1">
+                                  價目表上傳:請先「儲存」這筆聯絡資訊,再回來編輯即可上傳價目表照片
+                                </p>
+                              )}
                             </>
                           )}
 
-                          <input
-                            maxLength={200}
+                          <textarea
+                            rows={4}
+                            maxLength={500}
                             value={contactForm.note}
                             onChange={(e) =>
                               setContactForm({
@@ -1355,8 +1471,8 @@ export default function AppliancesPage() {
                                 note: e.target.value,
                               })
                             }
-                            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            placeholder="備註"
+                            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y whitespace-pre-wrap"
+                            placeholder="備註(職稱、Email、營業項目…可多行)"
                           />
 
                           <div className="flex gap-2 pt-1">
@@ -1385,6 +1501,7 @@ export default function AppliancesPage() {
                             <ContactRow
                               key={c.id}
                               c={c}
+                              priceFiles={contactFilesByContact[c.id] ?? []}
                               onEdit={() => openEditContact(c)}
                               onDelete={() => deleteContact(c.id)}
                             />
@@ -1465,16 +1582,12 @@ export default function AppliancesPage() {
                           placeholder="週期(天),空=不定期"
                         />
                       </div>
-                      <input
-                        type="date"
+                      <DateField
                         value={taskForm.last_done_date}
-                        onChange={(e) =>
-                          setTaskForm({
-                            ...taskForm,
-                            last_done_date: e.target.value,
-                          })
+                        placeholder="上次完成日(空=未做過)"
+                        onChange={(v) =>
+                          setTaskForm({ ...taskForm, last_done_date: v })
                         }
-                        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                       <input
                         maxLength={100}
@@ -1654,10 +1767,12 @@ function ApplianceCard({
 // 一筆聯絡資訊的顯示卡(依類別顯示不同欄位)
 function ContactRow({
   c,
+  priceFiles,
   onEdit,
   onDelete,
 }: {
   c: ApplianceContact;
+  priceFiles: ApplianceContactFile[];
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -1722,7 +1837,51 @@ function ContactRow({
         {!isUrl && c.address && (
           <p className="text-slate-600">📍 {c.address}</p>
         )}
-        {c.note && <p className="text-slate-400">{c.note}</p>}
+        {!isUrl && c.business_hours && (
+          <p className="text-slate-600">🕐 {c.business_hours}</p>
+        )}
+        {c.note && (
+          <p className="text-slate-400 whitespace-pre-wrap break-words">
+            {c.note}
+          </p>
+        )}
+        {priceFiles.length > 0 && (
+          <div className="pt-1">
+            <p className="text-xs text-slate-400 mb-1">📋 價目表</p>
+            <div className="flex flex-wrap gap-2">
+              {priceFiles.map((f) => {
+                const fileId = extractDriveFileId(f.url);
+                const isPdf = (f.name ?? "").toLowerCase().endsWith(".pdf");
+                return (
+                  <a
+                    key={f.id}
+                    href={f.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={f.name ?? "檢視價目表"}
+                    className="block w-16 h-16 rounded-lg overflow-hidden bg-slate-100 border border-slate-200"
+                  >
+                    {!isPdf && fileId ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={`https://drive.google.com/thumbnail?id=${fileId}&sz=w160`}
+                        className="w-full h-full object-cover"
+                        alt=""
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-2xl">
+                        📄
+                      </div>
+                    )}
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
       <div className="flex gap-2 mt-2">
         <button
@@ -1754,8 +1913,8 @@ function TaskRow({
   const status = computeTaskStatus(t);
   const meta = [
     t.cycle_days ? `每 ${t.cycle_days} 天` : "不定期",
-    t.last_done_date ? `上次:${t.last_done_date}` : null,
-    t.next_due_date ? `下次:${t.next_due_date}` : null,
+    t.last_done_date ? `上次:${formatDateWithWeekday(t.last_done_date)}` : null,
+    t.next_due_date ? `下次:${formatDateWithWeekday(t.next_due_date)}` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -1816,7 +1975,8 @@ function MultiUpload({
 }: {
   label: string;
   accept: string;
-  files: ApplianceFile[];
+  // 只用到 id / url / name,家電檔案與聯絡資訊檔案都吃這個型別
+  files: { id: number; url: string; name: string | null }[];
   uploading: boolean;
   onActivate: () => void;
   onUpload: (files: FileList | File[]) => void;
@@ -1902,58 +2062,3 @@ function MultiUpload({
   );
 }
 
-// 可打字的日期欄位:直接輸入(支援 2026/4/8、20260408),或點 📅 從日曆挑
-function DateField({
-  value,
-  onChange,
-  placeholder = "2026-04-08",
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-}) {
-  const pickerRef = useRef<HTMLInputElement>(null);
-
-  function openPicker() {
-    const picker = pickerRef.current;
-    if (!picker) return;
-    const cur = normalizeDate(value);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(cur)) picker.value = cur;
-    if (typeof picker.showPicker === "function") picker.showPicker();
-    else picker.focus();
-  }
-
-  return (
-    <div className="flex gap-1">
-      <input
-        type="text"
-        inputMode="numeric"
-        maxLength={10}
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={(e) => {
-          const v = normalizeDate(e.target.value);
-          if (/^\d{4}-\d{2}-\d{2}$/.test(v)) onChange(v);
-        }}
-        className="flex-1 min-w-0 border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-      />
-      <button
-        type="button"
-        onClick={openPicker}
-        className="px-2 bg-slate-100 hover:bg-slate-200 active:scale-95 rounded-lg text-lg shrink-0"
-        title="從日曆選"
-      >
-        📅
-      </button>
-      <input
-        ref={pickerRef}
-        type="date"
-        className="absolute opacity-0 pointer-events-none"
-        tabIndex={-1}
-        aria-hidden="true"
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
-  );
-}
