@@ -197,7 +197,13 @@ family-manager/
 - ✅ **帳單管理**:`lib/bills.ts` + `/api/bills` + `bills/page.tsx`
 - ✅ **採購清單**:`lib/shopping.ts`(`is_bought` 變化自動填 `bought_at`)+ `/api/shopping` + `clear-bought` + `shopping/page.tsx`
 - ✅ **家人通訊錄**:`lib/contacts.ts` + `/api/contacts` + `contacts/page.tsx`(頭像漸層、生日提醒、tel/line/mailto 動作鍵)
-- ✅ **家電管理**:`lib/appliances.ts`(雙表 `appliances` + `appliance_tasks`,FK cascade,`markTaskDone` 自動推進下次日期)+ `lib/drive.ts`(**Google Drive 上傳已做到底**:OAuth2、子資料夾歸檔、照片/說明書上傳)+ `/api/appliances` + `/api/appliance-tasks` + `appliances/page.tsx`(modal 內任務子清單、Drive 縮圖、Ctrl+V 貼上上傳、保固徽章)
+- ✅ **家電管理(已強化)**:`lib/appliances.ts`(雙表 `appliances` + `appliance_tasks`,FK cascade,`markTaskDone` 自動推進下次日期)+ `lib/drive.ts`(Google Drive 上傳:OAuth2、子資料夾歸檔)+ `/api/appliances` + `/api/appliance-tasks` + `appliances/page.tsx`(modal 內任務子清單、保固徽章)
+  - **聯絡資訊**:獨立成 `appliance_contacts` 分類別子表(category = 耗材連結 / 保養資訊 / 購買店家,欄位依類別切換)→ `lib/applianceContacts.ts` + `/api/appliance-contacts`
+  - **名片拍照 OCR 自動填表**:Google Vision API(純 fetch + `GOOGLE_VISION_API_KEY`,無 npm 套件)→ `/api/vision-ocr`;抽店家/聯絡人/電話/地址回填空欄
+  - **多檔上傳(全新標準)**:獨立 `appliance_files` 子表(kind = photo / manual / receipt)+ `MultiUpload` 元件(Ctrl+V 貼上、縮圖列表、多檔)→ `lib/applianceFiles.ts` + `/api/appliance-files`;取代舊的 `photo_url`/`manual_url` 單欄。**此為所有板塊上傳區強制標準**(見「上傳區標準」段)
+  - **保固分頁**:加收據上傳(歸檔 `家電名稱-購買收據-原檔名`)+ 保固備註
+  - **區域篩選列**:狀態列下方加動態 chips 篩選列(選項由 `location` 自動長出、與狀態列視覺分開)
+  - 📌 跨板塊可重用樣式已萃取成 skill:`.claude/skills/patterns-rich-ui/`(OCR 自動填表 / 多檔上傳 / 分類別子表 / 動態篩選列)
 - ✅ **主頁**:`page.tsx` + `lib/modules.ts`,17 個板塊卡片(4 已啟用、13 規劃中)
 
 **17 個板塊規劃(已啟用 4、規劃中 13)**
@@ -207,8 +213,9 @@ family-manager/
 - 📂 資訊:公佈欄、家人通訊錄 ✅、車輛紀錄、**家電管理 ✅**、借用紀錄、醫療紀錄、照片回憶
 
 **外部整合狀態**
-- ✅ Supabase 已接通:`SUPABASE_URL` + `SUPABASE_SECRET_KEY` 在 `web/.env.local`,4 張表已建好
-- ✅ Google Drive 已接通:`drive-token.json`(OAuth2 + refresh_token),家電板塊可從系統內上傳照片/說明書,自動歸檔到 `家庭管理系統/家電管理/`
+- ✅ Supabase 已接通:`SUPABASE_URL` + `SUPABASE_SECRET_KEY` 在 `web/.env.local`(bills / shopping / contacts / appliances / appliance_tasks / appliance_contacts / appliance_files 等表已建好)
+- ✅ Google Vision API 已接通:`GOOGLE_VISION_API_KEY` 在 `web/.env.local`(server-only,名片 OCR 用)
+- ✅ Google Drive 已接通:`drive-token.json`(OAuth2 + refresh_token),家電板塊可從系統內多檔上傳照片/說明書/收據,自動歸檔到 `家庭管理系統/家電管理/`
   - ⚠️ OAuth consent 在 **Testing** 模式 → `refresh_token` **7 天過期**。過期後跑 `authorize_drive.py` 重新授權即可(不會開新資料夾);永久解法是把 app 發布到 Production
 
 **下一步候選**
