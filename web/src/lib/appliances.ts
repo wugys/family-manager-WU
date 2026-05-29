@@ -6,6 +6,7 @@
 //   appliance_tasks:每台家電可有多個保養 / 耗材 / 清潔任務,各自有週期
 import { getClient } from "./supabase";
 import { deleteFileByUrl } from "./drive";
+import { listFiles } from "./applianceFiles";
 
 // 任務類型 task_type 的合法值;前端 datalist 預設選項用
 export const TASK_TYPE_OPTIONS = ["清潔", "保養", "耗材更換", "其他"];
@@ -18,8 +19,10 @@ export interface ApplianceCreate {
   location?: string | null;
   purchase_date?: string | null;
   warranty_until?: string | null;
-  manual_url?: string | null;
-  photo_url?: string | null;
+  out_of_warranty?: boolean; // 已過保固(不追蹤保固到期日,給早就過保的舊家電用)
+  warranty_note?: string | null; // 保固相關備註(跟基本資料的 note 分開)
+  // 聯絡資訊已獨立成 appliance_contacts 表(可多筆、分類別),見 lib/applianceContacts.ts
+  // 上傳檔案(照片 / 說明書 / 收據,皆可多檔)已獨立成 appliance_files 表,見 lib/applianceFiles.ts
   note?: string | null;
 }
 
@@ -33,8 +36,8 @@ export interface Appliance {
   location: string | null;
   purchase_date: string | null;
   warranty_until: string | null;
-  manual_url: string | null;
-  photo_url: string | null;
+  out_of_warranty: boolean; // 已過保固(true = 直接標過保,不看日期)
+  warranty_note: string | null; // 保固相關備註(跟基本資料的 note 分開)
   note: string | null;
   created_at: string;
   updated_at: string;
@@ -138,14 +141,17 @@ export async function updateAppliance(
   return data[0] as Appliance;
 }
 
-// 刪除家電;DB 層 ON DELETE CASCADE 會連帶刪該家電底下所有任務。
-// Drive 端的照片 / 說明書一併刪除(失敗不擋 DB 流程)。
+// 刪除家電;DB 層 ON DELETE CASCADE 會連帶刪該家電底下所有任務 / 聯絡資訊 / 檔案紀錄。
+// Drive 端的所有上傳檔(照片 / 說明書 / 收據)一併刪除(失敗不擋 DB 流程)。
 export async function deleteAppliance(id: number): Promise<boolean> {
   const current = await getAppliance(id);
   if (current === null) return false;
 
-  if (current.photo_url) await deleteFileByUrl(current.photo_url);
-  if (current.manual_url) await deleteFileByUrl(current.manual_url);
+  // 先把這台家電在 Drive 上的所有檔案刪掉,避免孤兒檔
+  const files = await listFiles(id);
+  for (const f of files) {
+    if (f.url) await deleteFileByUrl(f.url);
+  }
 
   const { data, error } = await getClient()
     .from(TABLE_APPLIANCES)

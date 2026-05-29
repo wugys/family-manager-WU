@@ -46,6 +46,13 @@ Kevin 明確指定、所有板塊都要遵守的規則。語言與註解風格�
 7. **Kevin 只看最後結果**——Kevin 驗收的是「**網頁是否如預期顯示** + **文字資料是否進 Supabase**」兩件事,不看中間過程。**不需要**先給 Kevin 看 SQL / 程式碼解釋讓他點頭才動手——他點不出細節問題,只會延長等待。一般 DDL(`ALTER TABLE ADD/DROP COLUMN`、`CREATE TABLE`、`CREATE INDEX`)直接跑。例外:`supabase_admin.py` 黑名單擋住的破壞性操作(`DROP TABLE` / `TRUNCATE` 任何現有業務表)要 Kevin 真的同意才能拆白名單
 8. **新板塊有上傳功能時,主動 surface Drive 歸檔命名規則**——做新板塊(車輛紀錄、借用紀錄、寵物管理、醫療紀錄、照片回憶等)時,只要該板塊會上傳檔案到 Drive,寫 upload route 前**主動列 2-3 個 `kindLabel` 候選**讓 Kevin 挑(例:車輛 → 「車輛照片 / 行照 / 維修單據」、借用 → 「物品照片 / 歸還憑證」)。命名規則統一 `<板塊主物件名>-<kindLabel>-<原檔名>`(套家電板塊的樣式,見 `web/src/app/api/appliances/[id]/upload/route.ts`)。理由:Drive 歸檔規則每個板塊不同、設定一次永遠用,Claude 自己拍板會偏離 Kevin 想要的命名習慣
 
+### 上傳區標準(強制,所有板塊一致)
+任何 Google Drive 上傳區(不論哪個板塊、哪個位置)都**必須**符合下面三點,格式統一:
+1. **支援 Ctrl+V 貼上圖片上傳**——滑鼠移到 / 點到該上傳區後,直接貼上剪貼簿的圖片即可上傳,不用一定要按「選檔」
+2. **支援多檔**——一個上傳區可放多張(收據可能多頁、照片可能多張),用**縮圖列表(grid)**呈現,每張縮圖可檢視 / 刪除,旁邊永遠有「+ 再加一張」的虛線格
+3. **每個上傳區外觀一致**——都套同一個 `MultiUpload` 元件(見 `web/src/app/appliances/page.tsx`),不要每個板塊各做一套
+資料模型:多檔存獨立子表 `<module>_files`(欄位 `<parent>_id` FK on delete cascade、`kind`、`url`、`name`、`created_at`),不要再用家電早期那種 `photo_url`/`manual_url` 單欄存單檔的做法。
+
 ### 自我檢查(寫完程式碼自己跑,不丟給 Kevin)
 - 寫完一個板塊用 `cd web && npx tsc --noEmit` 確認 TypeScript 沒型別錯誤(等同舊時代的 `python -c "import main"` sanity check)
 - 型別 / 語法錯誤自己修掉,不要丟給 Kevin 看
