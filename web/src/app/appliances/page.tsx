@@ -635,12 +635,8 @@ export default function AppliancesPage() {
 
       await loadAppliances();
 
-      if (!modalApplianceId) {
-        // 新增成功 → 自動切編輯模式(顯示剛上傳的照片、可繼續填保固/加任務)
-        if (createdAppliance) openEditModal(createdAppliance);
-      } else {
-        closeModal();
-      }
+      // 不論新增或編輯,存完都關閉 modal 回到列表 —— 讓使用者看到卡片(含剛上傳的頭貼)確認成功
+      closeModal();
     } catch (e) {
       alert("網路錯誤:" + (e instanceof Error ? e.message : e));
     } finally {

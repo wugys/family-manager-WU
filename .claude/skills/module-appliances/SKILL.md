@@ -174,31 +174,21 @@ POST   /api/appliance-tasks/{id}/mark-done   # 領域操作
 
 ---
 
-## 7. ⭐ UX 亮點:新增主物件後自動切編輯模式
+## 7. 新增 / 編輯主物件存完後:一律關 modal 回列表
 
-**問題**:使用者剛建一台家電,通常下一步就是加任務,但任務區塊只在「編輯模式」顯示(新增模式還沒 id,沒法給任務歸屬)。原本 4 步路徑:
-
-```
-儲存家電 → 關 modal → 主頁找剛建的卡片 → 點開 → 加任務
-```
-
-**解法**:`submitForm` 新增成功的分支內,**不關 modal,改開 editModal**:
+**現行行為(2026-06-03 定案)**:不論新增或編輯,`submitForm` 存完(含上傳暫存檔)都 **`closeModal()` 回到列表**,讓使用者看到剛建的卡片(含上傳的頭貼)→ 明確知道「成功了」。
 
 ```javascript
-// submitApplianceForm 內
-if (!id) {
-  const newAppliance = await res.json();
-  await loadAppliances();
-  openEditApplianceModal(newAppliance.id);  // ← 關鍵這行
-} else {
-  closeModal();
-  await loadAppliances();
-}
+// submitApplianceForm 結尾(新增時先用回傳的物件拿 id 做上傳,別用過時的 state)
+let createdAppliance = null;
+if (!id) { createdAppliance = await res.json(); applianceId = createdAppliance.id; }
+// ...上傳各區暫存檔、clearPending、loadAppliances()...
+closeModal();   // ← 新增 / 編輯都關
 ```
 
-效果:1 步搞定。
+**踩過的彎路(別再走)**:原本為了「新增後想接著加任務不用再點一次」,新增分支改成 **不關 modal、自動切 editModal**(`openEditModal(created)`)。但 Kevin 實測覺得**留在編輯畫面看不出到底存了沒、會以為失敗**——回列表看到卡片才是最直覺的成功回饋。所以改回「存完就關」。
 
-**規則**:任何「主物件 + 子物件」板塊都套這個模式。
+**取捨**:代價是想加保養/耗材任務時,要回列表**再點一次卡片**進去加(任務區只在點卡片後的「任務檢視」出現)。Kevin 確認可接受。**結論:這類「主物件 + 子物件」板塊,存完一律關 modal 回列表;不要自動切編輯模式。**
 
 ---
 
