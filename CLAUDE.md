@@ -47,10 +47,11 @@ Kevin 明確指定、所有板塊都要遵守的規則。語言與註解風格�
 8. **新板塊有上傳功能時,主動 surface Drive 歸檔命名規則**——做新板塊(車輛紀錄、借用紀錄、寵物管理、醫療紀錄、照片回憶等)時,只要該板塊會上傳檔案到 Drive,寫 upload route 前**主動列 2-3 個 `kindLabel` 候選**讓 Kevin 挑(例:車輛 → 「車輛照片 / 行照 / 維修單據」、借用 → 「物品照片 / 歸還憑證」)。命名規則統一 `<板塊主物件名>-<kindLabel>-<原檔名>`(套家電板塊的樣式,見 `web/src/app/api/appliances/[id]/upload/route.ts`)。理由:Drive 歸檔規則每個板塊不同、設定一次永遠用,Claude 自己拍板會偏離 Kevin 想要的命名習慣
 
 ### 上傳區標準(強制,所有板塊一致)
-任何 Google Drive 上傳區(不論哪個板塊、哪個位置)都**必須**符合下面三點,格式統一:
+任何 Google Drive 上傳區(不論哪個板塊、哪個位置)都**必須**符合下面四點,格式統一:
 1. **支援 Ctrl+V 貼上圖片上傳**——滑鼠移到 / 點到該上傳區後,直接貼上剪貼簿的圖片即可上傳,不用一定要按「選檔」
 2. **支援多檔**——一個上傳區可放多張(收據可能多頁、照片可能多張),用**縮圖列表(grid)**呈現,每張縮圖可檢視 / 刪除,旁邊永遠有「+ 再加一張」的虛線格
 3. **每個上傳區外觀一致**——都套同一個 `MultiUpload` 元件(見 `web/src/app/appliances/page.tsx`),不要每個板塊各做一套
+4. **暫存待送出(2026-06-03 新增強制標準)**——選 / 貼檔**只先在前端暫存**(虛線框預覽),按該表單的「儲存」鈕才真正上傳 Drive。好處:新增主物件時可「填文字 + 選檔」一次存完,不用「先存、再重開編輯才能傳檔」。**暫存狀態放父層集中管**(一個 `pending: Record<string, PendingFile[]>`),`MultiUpload` 是純受控顯示元件——切頁籤 / 切主物件都不掉檔。**禁止**舊的「選了就立刻上傳(`onUpload`)」或「用 `forwardRef`/`getFiles` 把暫存藏在元件內」寫法(切頁籤元件卸載會掉檔)。實作與方法論見 `patterns-rich-ui`(樣式2)+ `patterns-refactor`。
 資料模型:多檔存獨立子表 `<module>_files`(欄位 `<parent>_id` FK on delete cascade、`kind`、`url`、`name`、`created_at`),不要再用家電早期那種 `photo_url`/`manual_url` 單欄存單檔的做法。
 
 ### 自我檢查(寫完程式碼自己跑,不丟給 Kevin)
@@ -204,12 +205,13 @@ family-manager/
 - ✅ **家人通訊錄**:`lib/contacts.ts` + `/api/contacts` + `contacts/page.tsx`(頭像漸層、生日提醒、tel/line/mailto 動作鍵)
 - ✅ **家電管理(已強化)**:`lib/appliances.ts`(雙表 `appliances` + `appliance_tasks`,FK cascade,`markTaskDone` 自動推進下次日期)+ `lib/drive.ts`(Google Drive 上傳:OAuth2、子資料夾歸檔)+ `/api/appliances` + `/api/appliance-tasks` + `appliances/page.tsx`(modal 內任務子清單、保固徽章)
   - **聯絡資訊**:獨立成 `appliance_contacts` 分類別子表(category = 耗材連結 / 保養資訊 / 購買店家,欄位依類別切換)→ `lib/applianceContacts.ts` + `/api/appliance-contacts`。保養資訊 / 購買店家含「店家營業時間 `business_hours`」欄位
-  - **聯絡資訊價目表上傳**:店家(子物件)底下可傳價目表照片(可預覽)→ 子物件的子表 `appliance_contact_files`(kind = pricelist,FK `contact_id` cascade)+ 共用 `MultiUpload` → `lib/applianceContactFiles.ts` + `/api/appliance-contact-files`;Drive 命名 `家電名稱-店家名稱-價目表-原檔名`。**先存聯絡資訊、再回編輯才能上傳**(新增中無 id)
+  - **聯絡資訊價目表上傳**:店家(子物件)底下可傳價目表照片(可預覽)→ 子物件的子表 `appliance_contact_files`(kind = pricelist,FK `contact_id` cascade)+ 共用 `MultiUpload` → `lib/applianceContactFiles.ts` + `/api/appliance-contact-files`;Drive 命名 `家電名稱-店家名稱-價目表-原檔名`。**新增 / 編輯都可一起傳**(暫存待送出,2026-06-03 起;不再需要「先存再回編輯」)
   - **名片拍照辨識自動填表**:改用 **Google Gemini**(`gemini-2.5-flash`,純 fetch + `GEMINI_API_KEY`,無 npm 套件)直接「看圖」回結構化 JSON → `/api/vision-ocr`(route 名沿用,內部已換 Gemini);抽店家/聯絡人/電話/地址/備註,OCR 結果優先覆蓋。比舊版 Vision+正則準很多
-  - **多檔上傳(全新標準)**:獨立 `appliance_files` 子表(kind = photo / manual / receipt)+ `MultiUpload` 元件(Ctrl+V 貼上、縮圖列表、多檔)→ `lib/applianceFiles.ts` + `/api/appliance-files`;取代舊的 `photo_url`/`manual_url` 單欄。**此為所有板塊上傳區強制標準**(見「上傳區標準」段)
+  - **多檔上傳(全新標準,2026-06-03 改暫存待送出)**:獨立 `appliance_files` 子表(kind = photo / manual / receipt)+ `MultiUpload` 元件(Ctrl+V 貼上、縮圖列表、多檔)→ `lib/applianceFiles.ts` + `/api/appliance-files`;取代舊的 `photo_url`/`manual_url` 單欄。**選/貼檔只先暫存(虛線框預覽)、按「儲存」才上傳**,暫存狀態由父層 `pending` 集中管(切頁籤不掉檔)。**此為所有板塊上傳區強制標準**(見「上傳區標準」段四點)
   - **保固分頁**:加收據上傳(歸檔 `家電名稱-購買收據-原檔名`)+ 保固備註
   - **區域篩選列**:狀態列下方加動態 chips 篩選列(選項由 `location` 自動長出、與狀態列視覺分開)
-  - 📌 跨板塊可重用樣式已萃取成 skill:`.claude/skills/patterns-rich-ui/`(OCR/Gemini 自動填表 / 多檔上傳〔含掛在子物件底下〕/ 分類別子表〔含事後加欄位〕/ 動態篩選列 / 長字串溢出修法)
+  - **存完關 modal 回列表**(2026-06-03):新增 / 編輯家電存完都關閉 modal 回列表,讓使用者看到卡片確認成功(不再自動切編輯模式)
+  - 📌 跨板塊可重用樣式已萃取成 skill:`.claude/skills/patterns-rich-ui/`(Gemini 拍照自動填表 / 多檔上傳〔暫存待送出、含掛在子物件底下〕/ 分類別子表〔含事後加欄位〕/ 動態篩選列 / 長字串溢出修法);**重構既有功能 / 改共用元件的方法論**見 `.claude/skills/patterns-refactor/`
 - ✅ **主頁**:`page.tsx` + `lib/modules.ts`,17 個板塊卡片(4 已啟用、13 規劃中)
 
 **17 個板塊規劃(已啟用 4、規劃中 13)**
