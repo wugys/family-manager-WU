@@ -1,6 +1,6 @@
 ---
 name: patterns-rich-ui
-description: family-manager 進階前端 / 整合方法論(Next.js 16 + Supabase + Google Drive),從家電板塊強化那輪萃取出的四個可重用樣式。當未來任何板塊需要以下其中之一時讀這份:(1) 名片 / 收據 / 文件「拍照 OCR 自動填表」(Google Vision API);(2)「多檔上傳區」(縮圖列表 + 複選 + Ctrl+V 貼上,存獨立 <module>_files 子表 + MultiUpload 元件);(3)「一個主物件掛多筆、各帶類別」的分類別子表(欄位依類別切換,如耗材連結 / 保養資訊 / 購買店家);(4)「動態篩選列」(chips 選項由資料自動產生、多排疊加)。實作參考檔都在 web/src 家電板塊。先讀 system-prep + module-supabase 再讀這份。
+description: family-manager 進階前端 / 整合方法論(Next.js 16 + Supabase + Google Drive),從家電板塊強化那輪萃取出的四個可重用樣式。當未來任何板塊需要以下其中之一時讀這份:(1) 名片 / 收據 / 文件「拍照辨識自動填表」(Google Gemini 直接看圖回結構化 JSON);(2)「多檔上傳區」(縮圖列表 + 複選 + Ctrl+V 貼上,存獨立 <module>_files 子表 + MultiUpload 元件);(3)「一個主物件掛多筆、各帶類別」的分類別子表(欄位依類別切換,如耗材連結 / 保養資訊 / 購買店家);(4)「動態篩選列」(chips 選項由資料自動產生、多排疊加)。實作參考檔都在 web/src 家電板塊。先讀 system-prep + module-supabase 再讀這份。
 ---
 
 # 進階前端 / 整合樣式 SKILL（Next.js 16）
@@ -8,7 +8,7 @@ description: family-manager 進階前端 / 整合方法論(Next.js 16 + Supabase
 家電板塊強化那輪做出的四個**跨板塊可重用樣式**。每個樣式都有:何時用、資料模型、API、前端、踩過的坑。
 
 實作參考檔(都已 commit,直接複製改名):
-- OCR:`web/src/app/api/vision-ocr/route.ts`
+- 拍照辨識:`web/src/app/api/vision-ocr/route.ts`(route 名沿用,內部已換 Gemini)
 - 多檔上傳:`web/src/lib/applianceFiles.ts` + `web/src/app/api/appliance-files/**` + `page.tsx` 的 `MultiUpload` 元件
 - 分類別子表:`web/src/lib/applianceContacts.ts` + `web/src/app/api/appliance-contacts/**`
 - 動態篩選列:`web/src/app/appliances/page.tsx` header 區
@@ -17,45 +17,53 @@ description: family-manager 進階前端 / 整合方法論(Next.js 16 + Supabase
 
 ---
 
-## 樣式 1:拍照 OCR 自動填表（Google Vision API）
+## 樣式 1:拍照辨識自動填表（Google Gemini 看圖）
 
 **何時用**:任何「現場有張紙(名片 / 收據 / 保單 / 證件),想拍一張就自動填欄位」的需求。
 
-**為什麼用 Vision 不用 Tesseract**:準度高很多(尤其繁中)、不用裝 npm 套件(純 `fetch` + API key)、免費額度 1000 次/月夠家用。
+**為什麼用 Gemini 不用 Vision+正則(2026-05-30 換掉)**:舊版用 Google Vision 做 OCR 出「一整段文字」,再自己用正則 / 啟發法猜哪段是人名、哪段是電話 —— 名片排版一怪就抓錯、抓雜訊。改用 **Gemini(`gemini-2.5-flash`)直接「看圖」回結構化 JSON**:它讀得懂名片版型、能正確區分人名 / 公司名 / 職稱,準很多。一樣是純 `fetch` + API key、不裝 npm 套件、有免費額度。**route 名沿用 `/api/vision-ocr`**(內部已換 Gemini),前端呼叫不用改。
 
-**金鑰**:`web/.env.local` 放 `GOOGLE_VISION_API_KEY=...`(server-only,**不加** `NEXT_PUBLIC_`)。GCP 建金鑰時:API 限制只勾 Cloud Vision API;應用程式限制設「無」(server 端呼叫沒 referrer,設網站限制會壞);**不要**勾「透過服務帳戶驗證」(那是 Vertex/Gemini 用)。改 `.env.local` 後要重啟一次 dev server。
+**金鑰**:`web/.env.local` 放 `GEMINI_API_KEY=...`(server-only,**不加** `NEXT_PUBLIC_`)。改 `.env.local` 後重啟一次 dev server。舊的 `GOOGLE_VISION_API_KEY` 已不再使用。
+
+**核心心法:用 `responseSchema` 逼 Gemini 回乾淨 JSON**——把「圖片(base64 inline_data)+ 一段指示 prompt + 要的欄位 schema」一起送過去,Gemini 直接回填好的 JSON,**route 不用再自己解析文字**。
 
 **Route 骨架**(`POST /api/vision-ocr`,收 multipart 一張圖):
 ```ts
-const res = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
+const GEMINI_MODEL = "gemini-2.5-flash";   // 要換模型改這行即可
+const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+
+const base64 = Buffer.from(await file.arrayBuffer()).toString("base64");
+const res = await fetch(url, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
-    requests: [{
-      image: { content: base64 },                  // Buffer.from(await file.arrayBuffer()).toString("base64")
-      features: [{ type: "TEXT_DETECTION" }],
-      imageContext: { languageHints: ["zh-Hant", "en"] },
-    }],
+    contents: [{ parts: [
+      { text: PROMPT },                                        // 指示它怎麼抽欄位(繁中講清楚)
+      { inline_data: { mime_type: file.type, data: base64 } }, // 圖片本身
+    ]}],
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: RESPONSE_SCHEMA,   // 欄位定義,逼它「只」回這些 key
+      temperature: 0,                    // 辨識任務要穩定、不要發揮
+    },
   }),
 });
-const rawText = data?.responses?.[0]?.fullTextAnnotation?.text ?? "";
+// Gemini 把 JSON 字串放在 candidates[0].content.parts[0].text,再 JSON.parse
+const parsed = JSON.parse(data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}");
 ```
 
-**關鍵心法:OCR 只負責出「整段文字」,解析欄位是另一回事**。route 內把 `rawText` 切行後用 regex / 啟發法抽欄位回傳結構化 JSON,前端拿到直接填。家電名片範例抽了:店家名稱、聯絡人、市話、行動、地址、濃縮備註。
+**`RESPONSE_SCHEMA`**:`{ type:"object", properties:{ name, contact_person, phone, mobile, address, note, text }, required:[全部] }`(每個都 `type:"string"`)。`required` 列全部欄位、找不到的讓它回空字串 `""`,前端就不用一堆 `undefined` 判斷。
 
-**台灣電話格式**(踩過坑,直接抄):
-- 行動:`/09\d{2}[-\s.]?\d{3}[-\s.]?\d{3}/` → 格式化 `09NN-NNN-NNN`
-- 市話:`/\(?0(89|37|39|49|2|3|4|5|6|7|8)\)?[-\s.]*(\d{3,4})[-\s.]*(\d{3,4})/` → **長區碼放前面**(否則 `0`+`3` 會先吃掉 037);格式化 `02-NNNN-NNNN` / `037-NNN-NNNN`
-- 全形數字先轉半形:`s.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0) - 0xfee0))`
+**PROMPT 心法**:繁中明確規定每個欄位要什麼、找不到回 `""`,特別叮嚀「**區分人名 vs 公司名**、職稱不要當人名」;電話要它「保留易讀格式(如 02-6613-8709)」、note 要它「每項各自一行(`\n` 分隔)」。→ 以前要自己寫的台灣區碼長度判斷、全形轉半形、正則切欄位**全部不用了**,在 prompt 裡用人話講清楚就好。
 
-**前端填表心法:空欄才填,不蓋掉使用者已打的**:
+**前端填表心法:辨識結果「優先覆蓋」**(Kevin 要的:名片抓到的就用,沒抓到才保留你原本打的):
 ```ts
-setForm(f => ({ ...f, name: f.name || data.name || "", phone: f.phone || data.phone || "" /* ... */ }));
+setForm(f => ({ ...f, name: data.name || f.name || "", phone: data.phone || f.phone || "" /* ... */ }));
 ```
 
 **相機輸入**:`<input type="file" accept="image/*" capture="environment">`(手機開後鏡頭,桌機開檔案選擇器)。
 
-**老實話(自己標出的簡化)**:聯絡人靠「職稱關鍵字旁的 2~4 中文字」、備註靠「沒被其他欄位用到的中文行」,排版怪會抓空 / 抓雜訊 → 一定要讓使用者能手動修。
+**老實話(自己標出的簡化)**:Gemini 偶爾還是會把職稱混進人名、或漏抓欄位 → 一定要讓使用者能手動修;回傳一併帶 `text`(整張名片原文)方便對照補填。
 
 ---
 
