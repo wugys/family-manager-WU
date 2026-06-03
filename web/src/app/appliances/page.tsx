@@ -189,6 +189,10 @@ export default function AppliancesPage() {
   // Ctrl+V 貼上要丟到哪個上傳區(滑鼠移到 / 點到該區時設定)
   const [activeUploadKind, setActiveUploadKind] = useState<FileKind>("photo");
 
+  // 各上傳區「暫存待上傳」的檔案,統一由父層保管(切頁籤 / 切家電 / 切店家都不會掉)。
+  // key:photo / manual / receipt / contactPrice
+  const [pending, setPending] = useState<Record<string, PendingFile[]>>({});
+
   // 任務檢視上方兩個頁籤:保養/耗材任務 vs 聯絡資訊
   const [tasksTab, setTasksTab] = useState<"tasks" | "contacts">("tasks");
 
@@ -278,6 +282,46 @@ export default function AppliancesPage() {
     return (filesByAppliance[id] ?? []).filter((f) => f.kind === kind);
   }
 
+  // ===== 暫存檔操作(共用給所有上傳區)=====
+  // 暫存一批檔到某個上傳區(圖片產生預覽縮圖,PDF 不預覽)
+  function addPending(key: string, fileList: FileList | File[]) {
+    const list = Array.from(fileList);
+    for (const file of list) {
+      if (file.type.startsWith("image/")) {
+        const reader = new FileReader();
+        reader.onload = (e) =>
+          setPending((prev) => ({
+            ...prev,
+            [key]: [
+              ...(prev[key] ?? []),
+              { file, preview: (e.target?.result as string) || "" },
+            ],
+          }));
+        reader.readAsDataURL(file);
+      } else {
+        setPending((prev) => ({
+          ...prev,
+          [key]: [...(prev[key] ?? []), { file, preview: "" }],
+        }));
+      }
+    }
+  }
+  // 移除某個上傳區裡第 idx 張暫存檔
+  function removePending(key: string, idx: number) {
+    setPending((prev) => ({
+      ...prev,
+      [key]: (prev[key] ?? []).filter((_, i) => i !== idx),
+    }));
+  }
+  // 清空指定上傳區的暫存(送出成功後呼叫)
+  function clearPending(...keys: string[]) {
+    setPending((prev) => {
+      const next = { ...prev };
+      for (const k of keys) delete next[k];
+      return next;
+    });
+  }
+
   // ===== Modal 開關 =====
   function showModal() {
     setModalOpen(true);
@@ -285,6 +329,7 @@ export default function AppliancesPage() {
   }
   function closeModal() {
     setModalVisible(false);
+    setPending({}); // 關閉時丟掉所有未送出的暫存檔
     setTimeout(() => setModalOpen(false), 250);
   }
 
@@ -292,6 +337,7 @@ export default function AppliancesPage() {
     setModalApplianceId(null);
     setForm(emptyApplianceForm);
     setActiveUploadKind("photo");
+    setPending({});
     setShowTaskForm(false);
     setTaskForm(emptyTaskForm);
     setEditingContactId(null);
@@ -328,6 +374,7 @@ export default function AppliancesPage() {
       note: a.note ?? "",
     });
     setActiveUploadKind("photo");
+    setPending({});
     setShowTaskForm(false);
     setTaskForm(emptyTaskForm);
     setEditingContactId(null);
@@ -341,6 +388,7 @@ export default function AppliancesPage() {
   // 新增聯絡資訊:開空白表單(editingContactId=0)
   function openNewContact() {
     setContactForm(emptyContactForm);
+    clearPending("contactPrice");
     setEditingContactId(0);
   }
 
@@ -360,6 +408,7 @@ export default function AppliancesPage() {
       note: c.note ?? "",
       also_maintenance: c.also_maintenance ?? false,
     });
+    clearPending("contactPrice");
     setEditingContactId(c.id);
   }
 
@@ -400,8 +449,19 @@ export default function AppliancesPage() {
         alert("儲存失敗:" + JSON.stringify(err.detail));
         return;
       }
+      // 取得這筆聯絡資訊的 id(新增時讀 POST 回傳),把暫存的價目表一起送出上傳
+      const savedContactId =
+        editingContactId === 0
+          ? ((await res.json()) as ApplianceContact).id
+          : editingContactId;
+      const stagedPrice = (pending.contactPrice ?? []).map((p) => p.file);
+      if (stagedPrice.length > 0) {
+        await uploadContactFiles(savedContactId, stagedPrice); // 內部會 reload
+        clearPending("contactPrice");
+      } else {
+        await loadAppliances();
+      }
       setEditingContactId(null);
-      await loadAppliances();
     } catch (e) {
       alert("網路錯誤:" + (e instanceof Error ? e.message : e));
     }
@@ -497,14 +557,12 @@ export default function AppliancesPage() {
   // ===== 家電表單送出 =====
   async function submitApplianceForm(e: React.FormEvent) {
     e.preventDefault();
-    // photo_url / manual_url 不從這個 form 送 → 它們透過 /upload endpoint 改
     const data = {
       name: form.name.trim(),
       location: form.location.trim() || null,
       brand: form.brand.trim() || null,
       model: form.model.trim() || null,
       purchase_date: normalizeDate(form.purchase_date) || null,
-      // 標了「已過保固」就不存到期日(避免日期跟狀態打架)
       warranty_until: form.out_of_warranty
         ? null
         : normalizeDate(form.warranty_until) || null,
@@ -513,6 +571,15 @@ export default function AppliancesPage() {
       note: form.note.trim() || null,
     };
     try {
+      setUploading((u) => ({
+        ...u,
+        photo: true,
+        manual: true,
+        receipt: true,
+      }));
+
+      // 步驟 1:先儲存家電基本資料
+      let applianceId = modalApplianceId;
       const res = modalApplianceId
         ? await fetch(`${API_APPLIANCES}/${modalApplianceId}`, {
             method: "PATCH",
@@ -524,22 +591,65 @@ export default function AppliancesPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(data),
           });
+
       if (!res.ok) {
         const err = await res.json();
         alert("儲存失敗:" + JSON.stringify(err.detail));
         return;
       }
+
+      // 新增時取得返回的 id(整個物件留著,稍後切編輯模式直接用,避免讀到過時的 state)
+      let createdAppliance: Appliance | null = null;
       if (!modalApplianceId) {
-        // 新增成功 → 取回新 id,自動切到編輯模式以便繼續加任務 / 上傳
-        const created: Appliance = await res.json();
-        await loadAppliances();
-        openEditModal(created);
+        createdAppliance = await res.json();
+        applianceId = createdAppliance!.id;
+      }
+
+      // 步驟 2:把三個上傳區的暫存檔一次送出
+      const allUploads = [
+        ...(pending.photo ?? []).map((p) => ({ file: p.file, kind: "photo" as const })),
+        ...(pending.manual ?? []).map((p) => ({ file: p.file, kind: "manual" as const })),
+        ...(pending.receipt ?? []).map((p) => ({ file: p.file, kind: "receipt" as const })),
+      ];
+
+      for (const { file, kind } of allUploads) {
+        const formData = new FormData();
+        formData.append("appliance_id", String(applianceId));
+        formData.append("kind", kind);
+        formData.append("file", file);
+        const uploadRes = await fetch(API_FILES, {
+          method: "POST",
+          body: formData,
+        });
+        if (!uploadRes.ok) {
+          const err = await uploadRes
+            .json()
+            .catch(() => ({ detail: "HTTP " + uploadRes.status }));
+          alert("上傳失敗:" + JSON.stringify(err.detail));
+          break;
+        }
+      }
+
+      // 步驟 3:清空暫存、刷新、關閉
+      clearPending("photo", "manual", "receipt");
+
+      await loadAppliances();
+
+      if (!modalApplianceId) {
+        // 新增成功 → 自動切編輯模式(顯示剛上傳的照片、可繼續填保固/加任務)
+        if (createdAppliance) openEditModal(createdAppliance);
       } else {
         closeModal();
-        await loadAppliances();
       }
     } catch (e) {
       alert("網路錯誤:" + (e instanceof Error ? e.message : e));
+    } finally {
+      setUploading((u) => ({
+        ...u,
+        photo: false,
+        manual: false,
+        receipt: false,
+      }));
     }
   }
 
@@ -562,45 +672,6 @@ export default function AppliancesPage() {
     closeModal();
     await loadAppliances();
   }
-
-  // ===== 檔案上傳(每個上傳區可多檔)=====
-  // 一次可上傳多個檔(選檔複選 / Ctrl+V 貼多張),逐一送到 /api/appliance-files
-  const uploadFiles = useCallback(
-    async (kind: FileKind, files: FileList | File[] | null | undefined) => {
-      if (!modalApplianceId) {
-        alert("請先儲存家電,才能上傳檔案");
-        return;
-      }
-      const list = files ? Array.from(files) : [];
-      if (list.length === 0) return;
-      setUploading((u) => ({ ...u, [kind]: true }));
-      try {
-        for (const file of list) {
-          const formData = new FormData();
-          formData.append("appliance_id", String(modalApplianceId));
-          formData.append("kind", kind);
-          formData.append("file", file);
-          const res = await fetch(API_FILES, {
-            method: "POST",
-            body: formData,
-          });
-          if (!res.ok) {
-            const err = await res
-              .json()
-              .catch(() => ({ detail: "HTTP " + res.status }));
-            alert("上傳失敗:" + JSON.stringify(err.detail));
-            break;
-          }
-        }
-        await loadAppliances();
-      } catch (e) {
-        alert("網路錯誤:" + (e instanceof Error ? e.message : e));
-      } finally {
-        setUploading((u) => ({ ...u, [kind]: false }));
-      }
-    },
-    [modalApplianceId, loadAppliances],
-  );
 
   // 刪除單一檔案(連同 Drive 上的實體檔)
   async function removeFile(id: number) {
@@ -663,9 +734,9 @@ export default function AppliancesPage() {
     await loadAppliances();
   }
 
-  // ===== Ctrl+V 貼截圖上傳 =====
+  // ===== Ctrl+V 貼截圖 =====
   // 貼上的圖片丟到「目前作用中的上傳區」(activeUploadKind,滑鼠移到該區時設定);
-  // 一次可貼多張。只在編輯檢視有上傳區。
+  // 現在改成暫存到前端記憶體,不直接上傳
   useEffect(() => {
     if (!modalOpen || modalMode !== "edit") return;
     function onPaste(e: ClipboardEvent) {
@@ -680,21 +751,17 @@ export default function AppliancesPage() {
       }
       if (imgs.length === 0) return;
       e.preventDefault();
-      if (!modalApplianceId) {
-        alert("請先儲存家電,才能上傳檔案");
-        return;
-      }
-      uploadFiles(activeUploadKind, imgs);
+      // 丟到目前作用中的上傳區暫存(不上傳)
+      addPending(activeUploadKind, imgs);
     }
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
-  }, [modalOpen, modalMode, modalApplianceId, activeUploadKind, uploadFiles]);
+  }, [modalOpen, modalMode, activeUploadKind]);
 
   // ===== Ctrl+V 貼圖到「價目表」上傳區 =====
-  // 只在編輯既有聯絡資訊(editingContactId > 0)時有效——新增中的還沒 contact_id,無法掛檔
+  // 聯絡資訊表單開著時(新增 0 或編輯 >0)都可貼,一律丟進暫存待表單送出
   useEffect(() => {
-    if (!editingContactId || editingContactId <= 0) return;
-    const contactId = editingContactId;
+    if (editingContactId === null) return;
     function onPaste(e: ClipboardEvent) {
       const items = e.clipboardData?.items;
       if (!items) return;
@@ -707,11 +774,11 @@ export default function AppliancesPage() {
       }
       if (imgs.length === 0) return;
       e.preventDefault();
-      uploadContactFiles(contactId, imgs);
+      addPending("contactPrice", imgs);
     }
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
-  }, [editingContactId, uploadContactFiles]);
+  }, [editingContactId]);
 
   // ===== 任務操作 =====
   async function submitTaskForm(e: React.FormEvent) {
@@ -1013,9 +1080,11 @@ export default function AppliancesPage() {
                   label="家電照片(第一張為主頁卡片頭貼)"
                   accept="image/*"
                   files={filesOf(modalApplianceId, "photo")}
+                  pending={pending.photo ?? []}
                   uploading={uploading.photo}
                   onActivate={() => setActiveUploadKind("photo")}
-                  onUpload={(files) => uploadFiles("photo", files)}
+                  onAddFiles={(files) => addPending("photo", files)}
+                  onRemovePending={(idx) => removePending("photo", idx)}
                   onDelete={removeFile}
                 />
 
@@ -1024,9 +1093,11 @@ export default function AppliancesPage() {
                   label="說明書(PDF 或圖片)"
                   accept=".pdf,image/*"
                   files={filesOf(modalApplianceId, "manual")}
+                  pending={pending.manual ?? []}
                   uploading={uploading.manual}
                   onActivate={() => setActiveUploadKind("manual")}
-                  onUpload={(files) => uploadFiles("manual", files)}
+                  onAddFiles={(files) => addPending("manual", files)}
+                  onRemovePending={(idx) => removePending("manual", idx)}
                   onDelete={removeFile}
                 />
 
@@ -1129,9 +1200,11 @@ export default function AppliancesPage() {
                       label="收據 / 保固卡照片"
                       accept="image/*,.pdf"
                       files={filesOf(modalApplianceId, "receipt")}
+                      pending={pending.receipt ?? []}
                       uploading={uploading.receipt}
                       onActivate={() => setActiveUploadKind("receipt")}
-                      onUpload={(files) => uploadFiles("receipt", files)}
+                      onAddFiles={(files) => addPending("receipt", files)}
+                      onRemovePending={(idx) => removePending("receipt", idx)}
                       onDelete={removeFile}
                     />
 
@@ -1437,27 +1510,27 @@ export default function AppliancesPage() {
                                 }
                               />
 
-                              {/* 價目表上傳區:只在編輯既有店家時出現(新增中還沒 id 無法掛檔) */}
-                              {editingContactId && editingContactId > 0 ? (
-                                <MultiUpload
-                                  label="價目表"
-                                  accept="image/*,application/pdf"
-                                  files={
-                                    contactFilesByContact[editingContactId] ??
-                                    []
-                                  }
-                                  uploading={contactUploading}
-                                  onActivate={() => {}}
-                                  onUpload={(files) =>
-                                    uploadContactFiles(editingContactId, files)
-                                  }
-                                  onDelete={removeContactFile}
-                                />
-                              ) : (
-                                <p className="text-xs text-slate-400 px-1">
-                                  價目表上傳:請先「儲存」這筆聯絡資訊,再回來編輯即可上傳價目表照片
-                                </p>
-                              )}
+                              {/* 價目表上傳區:新增 / 編輯都可,暫存待表單「儲存」時一起送出 */}
+                              <MultiUpload
+                                label="價目表"
+                                accept="image/*,application/pdf"
+                                files={
+                                  editingContactId && editingContactId > 0
+                                    ? contactFilesByContact[editingContactId] ??
+                                      []
+                                    : []
+                                }
+                                pending={pending.contactPrice ?? []}
+                                uploading={contactUploading}
+                                onActivate={() => {}}
+                                onAddFiles={(files) =>
+                                  addPending("contactPrice", files)
+                                }
+                                onRemovePending={(idx) =>
+                                  removePending("contactPrice", idx)
+                                }
+                                onDelete={removeContactFile}
+                              />
                             </>
                           )}
 
@@ -1962,103 +2035,141 @@ function TaskRow({
 
 // 共用的多檔上傳區(所有 Drive 上傳區都套這個,見 CLAUDE.md「上傳區標準」):
 //   · 縮圖列表(可多張),每張可檢視 / 刪除
-//   · 選檔複選 + Ctrl+V 貼上(貼上由父層 activeUploadKind 決定丟到哪區,滑鼠移到本區會設定)
+//   · 選檔複選 + Ctrl+V 貼上(貼上由父層 activeUploadKind 決定丟到哪區)
+//   · 暫存狀態由「父層」保管(pending),切頁籤 / 切家電 / 切店家都不會掉;
+//     送出時父層直接讀 pending 一次上傳。本元件是純受控顯示,不自己管狀態。
 //   · 格式統一,各板塊重用
+type PendingFile = { file: File; preview: string };
+
 function MultiUpload({
   label,
   accept,
   files,
+  pending,
   uploading,
   onActivate,
-  onUpload,
+  onAddFiles,
+  onRemovePending,
   onDelete,
 }: {
   label: string;
   accept: string;
-  // 只用到 id / url / name,家電檔案與聯絡資訊檔案都吃這個型別
   files: { id: number; url: string; name: string | null }[];
+  pending: PendingFile[];
   uploading: boolean;
   onActivate: () => void;
-  onUpload: (files: FileList | File[]) => void;
+  onAddFiles: (fileList: FileList | File[]) => void;
+  onRemovePending: (idx: number) => void;
   onDelete: (id: number) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-
   return (
-    <div onMouseEnter={onActivate} onFocusCapture={onActivate}>
-      <label className="block text-sm font-medium mb-1">
-        {label}
-        <span className="text-xs font-normal text-slate-400">
-          {" "}
-          · 可多張 · Ctrl+V 貼上
-        </span>
-      </label>
-      <div className="flex flex-wrap gap-2 p-2 bg-slate-50 rounded-lg">
-        {files.map((f) => {
-          const fileId = extractDriveFileId(f.url);
-          const isPdf = (f.name ?? "").toLowerCase().endsWith(".pdf");
-          return (
-            <div key={f.id} className="relative">
-              <a
-                href={f.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={f.name ?? "檢視"}
-                className="block w-20 h-20 rounded-lg overflow-hidden bg-slate-100 border border-slate-200"
-              >
-                {!isPdf && fileId ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={`https://drive.google.com/thumbnail?id=${fileId}&sz=w160`}
-                    className="w-full h-full object-cover"
-                    alt=""
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = "none";
-                    }}
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-2xl">
-                    📄
-                  </div>
-                )}
-              </a>
-              <button
-                type="button"
-                onClick={() => onDelete(f.id)}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 hover:bg-red-600 text-white text-xs leading-none flex items-center justify-center shadow"
-                title="刪除"
-              >
-                ×
-              </button>
-            </div>
-          );
-        })}
-
-        {/* 「再加一張」虛線格 */}
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={uploading}
-          className="w-20 h-20 rounded-lg border-2 border-dashed border-slate-300 hover:border-blue-400 text-slate-400 hover:text-blue-600 flex flex-col items-center justify-center transition disabled:opacity-50"
-        >
-          <span className="text-xl">＋</span>
-          <span className="text-[10px] mt-0.5">
-            {uploading ? "上傳中…" : files.length ? "加一張" : "選檔上傳"}
+      <div onMouseEnter={onActivate} onFocusCapture={onActivate}>
+        <label className="block text-sm font-medium mb-1">
+          {label}
+          <span className="text-xs font-normal text-slate-400">
+            {" "}
+            · 可多張 · Ctrl+V 貼上
           </span>
-        </button>
+        </label>
+        <div className="flex flex-wrap gap-2 p-2 bg-slate-50 rounded-lg">
+          {/* 已上傳的檔案(從 Supabase 讀來) */}
+          {files.map((f) => {
+            const fileId = extractDriveFileId(f.url);
+            const isPdf = (f.name ?? "").toLowerCase().endsWith(".pdf");
+            return (
+              <div key={f.id} className="relative">
+                <a
+                  href={f.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={f.name ?? "檢視"}
+                  className="block w-20 h-20 rounded-lg overflow-hidden bg-slate-100 border border-slate-200"
+                >
+                  {!isPdf && fileId ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`https://drive.google.com/thumbnail?id=${fileId}&sz=w160`}
+                      className="w-full h-full object-cover"
+                      alt=""
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-2xl">
+                      📄
+                    </div>
+                  )}
+                </a>
+                <button
+                  type="button"
+                  onClick={() => onDelete(f.id)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 hover:bg-red-600 text-white text-xs leading-none flex items-center justify-center shadow"
+                  title="刪除"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+
+          {/* 本地暫存的待上傳檔案(虛線框) */}
+          {pending.map((p, idx) => {
+            const isPdf = p.file.type === "application/pdf";
+            return (
+              <div key={`pending-${idx}`} className="relative">
+                <div className="block w-20 h-20 rounded-lg overflow-hidden bg-slate-100 border-2 border-dashed border-slate-300">
+                  {!isPdf && p.preview ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={p.preview}
+                      className="w-full h-full object-cover"
+                      alt=""
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-2xl">
+                      {isPdf ? "📄" : "🖼"}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onRemovePending(idx)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 hover:bg-red-600 text-white text-xs leading-none flex items-center justify-center shadow"
+                  title="移除"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+
+          {/* 「再加一張」虛線格 */}
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading}
+            className="w-20 h-20 rounded-lg border-2 border-dashed border-slate-300 hover:border-blue-400 text-slate-400 hover:text-blue-600 flex flex-col items-center justify-center transition disabled:opacity-50"
+          >
+            <span className="text-xl">＋</span>
+            <span className="text-[10px] mt-0.5">
+              {uploading ? "上傳中…" : files.length + pending.length ? "加一張" : "選檔上傳"}
+            </span>
+          </button>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept={accept}
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files && e.target.files.length) onAddFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
       </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept={accept}
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          if (e.target.files && e.target.files.length) onUpload(e.target.files);
-          e.target.value = ""; // 清掉以便連續選同名檔
-        }}
-      />
-    </div>
   );
 }
 

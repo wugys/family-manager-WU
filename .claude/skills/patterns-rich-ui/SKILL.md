@@ -63,7 +63,10 @@ setForm(f => ({ ...f, name: f.name || data.name || "", phone: f.phone || data.ph
 
 **何時用**:任何 Drive 上傳區。**這是強制標準**,所有板塊一致,不要每個板塊各做一套。
 
-**三鐵則**:① 縮圖列表可多檔、② 選檔複選 + Ctrl+V 貼上、③ 外觀統一套 `MultiUpload`。
+**四鐵則**:① 縮圖列表可多檔、② 選檔複選 + Ctrl+V 貼上、③ 外觀統一套 `MultiUpload`、④ **暫存待送出**——選 / 貼檔只在前端暫存(虛線框預覽),按該表單的「儲存」鈕才真正上傳 Drive。好處:新增主物件時可以「填文字 + 選檔」一次存完,不用「先存、再重開編輯才能傳檔」。
+
+**暫存狀態放「父層」集中管(2026-06-03 重構,重要)**:`MultiUpload` 是純受控顯示元件,自己不存暫存檔。父層用一個 `pending: Record<string, PendingFile[]>`(`type PendingFile = { file: File; preview: string }`,key 如 `photo` / `manual` / `receipt` / `contactPrice`)集中保管 —— **切頁籤、切主物件 / 子物件都不會掉檔**。送出時父層直接讀 `pending` 一次上傳、成功後 `clearPending(...)`。
+> **舊版已淘汰**:別再把暫存 state 藏在元件內、用 `forwardRef` + `useImperativeHandle` 的 `getFiles()` 由父層撈。那種寫法在切頁籤(元件卸載)時暫存會整批消失,而且每個上傳區要接一個 ref、很容易漏接。也別再用 `onUpload`「選了就立刻上傳」的模式。
 
 **資料模型:獨立子表 `<module>_files`**(不要再用 `photo_url` / `manual_url` 單欄存單檔的舊做法):
 ```sql
@@ -87,11 +90,13 @@ create index if not exists idx_<module>_files_parent on <module>_files(<parent>_
 - Drive 命名沿用 `<主物件名>-<kindLabel>-<原檔名>`;kindLabel 寫死 map(`photo→家電照片` 等),**做新板塊前主動列 2-3 個 kindLabel 候選讓 Kevin 挑**
 
 **前端**:
-- `loadXxx()` 平行多 fetch 一個 `API_FILES`,用 `filesByParent[id]` 分組;再 `filesOf(id, kind)` 取某區檔案
-- 一個 `MultiUpload` 元件,三個上傳區各放一個(props:`label` / `accept` / `files` / `uploading` / `onActivate` / `onUpload` / `onDelete`)
-- **Ctrl+V 路由**:用一個 `activeUploadKind` state,每個 `MultiUpload` 的 `onMouseEnter` / `onFocusCapture` 設定它;document 層 `paste` 事件把貼上的圖丟給 `activeUploadKind` 那區(可一次貼多張)
-- `<input type="file" multiple>`;`onChange` 後 `e.target.value = ""` 才能連選同名檔
-- 縮圖:圖片用 `https://drive.google.com/thumbnail?id=${fileId}&sz=w160`(`fileId` 從 view URL regex 反解),PDF(看檔名 `.pdf`)顯示 📄;`onError` 時 `display:none`
+- `loadXxx()` 平行多 fetch 一個 `API_FILES`,用 `filesByParent[id]` 分組;再 `filesOf(id, kind)` 取某區「已上傳」檔案
+- 父層 `pending` state + 三個小工具(共用給所有上傳區):`addPending(key, fileList)`(圖片用 `FileReader` 生 dataURL 預覽、PDF 不預覽)、`removePending(key, idx)`、`clearPending(...keys)`;開 modal / 切主物件 / 關 modal 時 reset(`setPending({})`)
+- 一個 `MultiUpload` 元件,每個上傳區各放一個。props:`label` / `accept` / `files`(已上傳)/ `pending`(該區暫存)/ `uploading` / `onActivate` / `onAddFiles` / `onRemovePending` / `onDelete`。**沒有 `onUpload`**——上傳改由父層在 submit 時統一做
+- **送出時才上傳**:`submitForm` 先存主物件(POST / PATCH,新增時讀回傳拿 `id`)→ 把各區 `pending` 攤平成 `[{file, kind}]` 逐一 POST 到 `API_FILES`(帶 `parent_id`)→ `clearPending(...)` → `loadXxx()`。新增成功後用回傳的物件(別用 `appliances.find`,那是過時的 state)切編輯模式
+- **Ctrl+V 路由**:用一個 `activeUploadKind` state,每個 `MultiUpload` 的 `onMouseEnter` / `onFocusCapture` 設定它;document 層 `paste` 事件呼叫 `addPending(activeUploadKind, imgs)`(暫存、不上傳;可一次貼多張)
+- `<input type="file" multiple>`;`onChange` 呼叫 `onAddFiles(e.target.files)` 後 `e.target.value = ""` 才能連選同名檔
+- 縮圖:已上傳檔用 `https://drive.google.com/thumbnail?id=${fileId}&sz=w160`(`fileId` 從 view URL regex 反解);暫存檔直接用本地 dataURL 預覽、外框用虛線(`border-dashed`)跟已上傳的區分;PDF(看檔名 / mime `.pdf`)顯示 📄;`onError` 時 `display:none`
 - 主物件 `deleteAppliance` 要先 `listFiles(id)` 把 Drive 檔逐一刪掉(cascade 只刪 DB 列、不刪 Drive 實體檔!)
 
 **踩過的坑**:cascade **不會**清 Drive 的實體檔,刪主物件 / 刪單檔都要自己呼叫 `deleteFileByUrl`。
@@ -101,8 +106,8 @@ create index if not exists idx_<module>_files_parent on <module>_files(<parent>_
 家電聯絡資訊(店家)底下要傳「價目表」照片 → 檔案掛在 **`appliance_contacts`(子物件)** 而不是 `appliances`。做法跟上面一樣,只是 FK 指向子表:`appliance_contact_files(contact_id FK on delete cascade, kind, url, name, created_at)`、領域檔 `applianceContactFiles.ts`、API `/api/appliance-contact-files`。實作參考檔已 commit。三個關鍵差異:
 
 1. **Drive 命名可多帶一層父名**:Kevin 選的格式是 `<家電名稱>-<店家名稱>-價目表-<原檔名>`。route 內先 `getContact(contactId)` 拿店家名 + `appliance_id`,再 `getAppliance()` 拿家電名,兩個都 `.replace(/[/\\]/g,"-")` 防破壞路徑。
-2. **「先存父、再傳檔」UX(重要)**:新增中的子物件還沒 `id`,檔案無處可掛。所以價目表上傳區**只在編輯既有聯絡資訊(`editingContactId > 0`)時 render**;`editingContactId === 0`(新增中)改顯示提示文字「請先儲存這筆,再回來編輯即可上傳」。別讓使用者對著還沒存的表單傳檔。
-3. **`MultiUpload` 的 `files` prop 型別放寬就能共用**:原本寫死 `ApplianceFile[]`,改成只取用到的欄位 `{ id:number; url:string; name:string|null }[]`,家電檔案與聯絡資訊檔案兩種型別都吃得下,元件零改動重用。Ctrl+V 也照樣做一個 scoped paste effect(deps 放 `editingContactId`),貼上的圖丟給該 contact;唯讀卡片(`Row`)也可把該物件的圖縮圖列出來當預覽(同一招 `drive.google.com/thumbnail?id=`)。
+2. **新增時也能一起傳檔(暫存流程已解決,2026-06-03)**:子物件還沒 `id` 時,檔案先進父層 `pending.contactPrice` 暫存;`submitContactForm` 先 POST 聯絡資訊拿回 `id`,再把暫存的價目表上傳到那個 `id`、最後 `clearPending("contactPrice")`。所以價目表上傳區**新增 / 編輯都 render**(不再需要舊版「請先儲存再回來編輯」的提示文字)。`files`(已上傳清單)仍只在 `editingContactId > 0` 時有東西、新增中為空陣列。
+3. **`MultiUpload` 的 `files` prop 型別放寬就能共用**:原本寫死 `ApplianceFile[]`,改成只取用到的欄位 `{ id:number; url:string; name:string|null }[]`,家電檔案與聯絡資訊檔案兩種型別都吃得下,元件零改動重用。Ctrl+V 也照樣做一個 scoped paste effect(deps 放 `editingContactId`,表單開著就能貼、新增 / 編輯皆可),貼上的圖 `addPending("contactPrice", imgs)` 暫存;唯讀卡片(`Row`)也可把該物件的圖縮圖列出來當預覽(同一招 `drive.google.com/thumbnail?id=`)。
 
 ---
 
