@@ -913,33 +913,23 @@ export default function AppliancesPage() {
         </div>
 
         {/* 第二排:依區域篩選(選項由現有家電的位置自動產生)
-            用上方分隔線 + 「區域」標籤,跟狀態篩選明顯分成兩類 */}
+            用上方分隔線 + 「區域」標籤,跟狀態篩選明顯分成兩類
+            改用下拉式選單(原生 select),區域多的時候比一整排 chips 省空間 */}
         {locationOptions.length > 0 && (
-          <div className="max-w-md mx-auto px-4 pt-2 pb-3 mt-1 border-t border-slate-200 flex items-center gap-2 overflow-x-auto">
+          <div className="max-w-md mx-auto px-4 pt-2 pb-3 mt-1 border-t border-slate-200 flex items-center gap-2">
             <span className="text-xs text-slate-400 shrink-0">區域</span>
-            <button
-              onClick={() => setLocationFilter("all")}
-              className={`px-3 py-1 rounded-full text-sm whitespace-nowrap ${
-                locationFilter === "all"
-                  ? "bg-blue-600 text-white"
-                  : "bg-slate-100 text-slate-600"
-              }`}
+            <select
+              value={locationFilter}
+              onChange={(e) => setLocationFilter(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              全部區域
-            </button>
-            {locationOptions.map((loc) => (
-              <button
-                key={loc}
-                onClick={() => setLocationFilter(loc)}
-                className={`px-3 py-1 rounded-full text-sm whitespace-nowrap ${
-                  locationFilter === loc
-                    ? "bg-blue-600 text-white"
-                    : "bg-slate-100 text-slate-600"
-                }`}
-              >
-                📍 {loc}
-              </button>
-            ))}
+              <option value="all">全部區域</option>
+              {locationOptions.map((loc) => (
+                <option key={loc} value={loc}>
+                  📍 {loc}
+                </option>
+              ))}
+            </select>
           </div>
         )}
       </header>
