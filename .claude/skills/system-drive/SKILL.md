@@ -130,6 +130,57 @@ def delete_<主物件>(<主物件>_id: int) -> bool:
     return len(res.data) > 0
 ```
 
+---
+
+## ⚠️ Next.js 子表時代修正(2026-06-18,以此為準)
+
+上面 Python 段是**舊架構**(單欄 `photo_url`/`manual_url`)。現在檔案改存**獨立子表** `<module>_files`(見 CLAUDE.md「上傳區標準」+ patterns-rich-ui),所以刪除與「加上傳區」的做法不同。
+
+### A. 刪父物件:DB cascade 只刪 row,Drive 實體檔要自己清(含孫表)
+
+**這是最容易漏的坑**:`on delete cascade` 只刪 Supabase 裡的紀錄,**Google Drive 上的實體檔不會自己消失**。刪父物件時必須先把所有關聯檔的 Drive 實體檔一筆筆刪掉,否則雲端留一堆孤兒檔。
+
+而且要連**孫表**一起清:家電底下不只有 `appliance_files`(照片/說明書/收據),還有「聯絡資訊(店家)→ 價目表」這種**子表的子表**(`appliance_contact_files`)。範例見 `web/src/lib/appliances.ts` 的 `deleteAppliance`:
+
+```typescript
+export async function deleteAppliance(id: number): Promise<boolean> {
+  const current = await getAppliance(id);
+  if (current === null) return false;
+
+  // 1) 父物件本身的上傳檔(子表)
+  const files = await listFiles(id);
+  for (const f of files) if (f.url) await deleteFileByUrl(f.url);
+
+  // 2) 子物件(店家)底下的檔(孫表)—— 別漏!cascade 會刪 row,Drive 檔不會自己消失
+  const contacts = await listContacts(id);
+  for (const c of contacts) {
+    const contactFiles = await listContactFiles(c.id);
+    for (const f of contactFiles) if (f.url) await deleteFileByUrl(f.url);
+  }
+
+  // 3) 最後刪 DB(cascade 自動連帶刪所有子/孫 row)
+  const { data, error } = await getClient()
+    .from("appliances").delete().eq("id", id).select();
+  if (error) throw new Error(error.message);
+  return (data ?? []).length > 0;
+}
+```
+
+**口訣**:**畫一遍「這個主物件底下哪些表會存 Drive URL」的樹**(子表、孫表都算),每一層都要在 delete 裡撈出來 `deleteFileByUrl`。漏一層就漏一批孤兒檔。
+
+### B. 加一個新「上傳區 kind」:`kind` 是 text 欄位,不用改 DB,但要改 6 個觸點
+
+子表的 `kind` 是純 text,新增一種上傳區(例:把「收據/保固卡」拆成 `receipt` + `warranty_card`)**完全不用動資料庫**,但前後端有 6 個觸點要一起改,漏一個就壞。以 2026-06-18 加 `warranty_card` 為例:
+
+1. **領域檔型別**:`lib/<module>Files.ts` 的 `FILE_KINDS` 陣列加新值(`["photo","manual","receipt","warranty_card"]`)
+2. **上傳 route 命名表**:`api/<module>-files/route.ts` 的 `KIND_LABEL` 加 `warranty_card: "保固卡"`(這決定 Drive 檔名)+ 更新驗證訊息文字
+3. **`uploading` 狀態**:`useState<Record<FileKind, boolean>>` 初值加 `warranty_card: false`(漏了型別會紅)
+4. **送出 handler 收集暫存**:`allUploads` 加 `...(pending.warranty_card ?? []).map(...kind: "warranty_card"...)`
+5. **送出後清暫存**:`clearPending("photo","manual","receipt","warranty_card")`
+6. **UI 上傳區**:多放一個 `<MultiUpload kind 對應的 files/pending/uploading/onAddFiles/onRemovePending>`
+
+**自我檢查**:改完跑 `npx tsc --noEmit`——因為 `uploading` 是 `Record<FileKind, boolean>`,只要漏掉第 3 點型別就會報錯,是個天然的 checklist 守門員。
+
 ### 前端上傳 UI(套 `static/appliances.html`)
 
 模板包含:

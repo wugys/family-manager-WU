@@ -283,9 +283,46 @@ CLAUDE.md「7 人家庭未來可考慮加入的功能」+「16 個板塊規劃�
 
 ---
 
-## 參考既有檔案
+## 12. 小 UI 心法(2026-06-18 這輪萃取,Next.js 版)
 
-- `appliances.py` — 雙表領域層的標準寫法(6 模型 + 11 函式)
-- `static/appliances.html` — 卡片 + modal + 子清單 UI 標準
-- `supabase_schema.sql` 的 `appliances` + `appliance_tasks` 段 — 雙表 + FK cascade SQL 模式
-- `main.py` 的「家電管理 API」段 — 11 個端點的扁平路徑模式
+這三個是通用前端模式,任何「卡片列表 + modal + 檔案」的板塊都會用到。實作都在 `web/src/app/appliances/page.tsx`。
+
+### A. 唯讀展示區 vs 上傳入口分離
+
+同一份檔案常有兩種需求:**快速看**(瀏覽時)vs **管理**(新增/刪除)。別把上傳區到處複製,而是:
+- **管理入口只留一個**(家電的說明書只在「✎ 編輯家電 → 基本資料」的 `MultiUpload` 上傳/刪除)
+- **常用的地方放唯讀展示**(任務檢視頁籤下方常駐「📖 說明書區」,只列檔名 + 點開,不能改)
+
+好處:使用者最常看的畫面就能一鍵打開檔案,但不會有「兩個地方都能傳、傳了不同步」的混亂。唯讀區用 `filesOf(id, "manual")` 讀同一份資料,沒檔就整區不顯示(`length > 0 &&`)。
+
+### B. 整張卡片可點時,卡內動作鈕一定要 `stopPropagation`
+
+家電卡片整張 `onClick={onOpenTasks}`(點哪都開 modal)。卡片裡的 ✎ 編輯、🗑 刪除鈕若不擋,點下去會**連帶觸發開 modal**。每個卡內按鈕都要:
+
+```tsx
+onClick={(e) => { e.stopPropagation(); onDelete(); }}
+```
+
+🗑 刪除鈕同時要把 cascade 講清楚(見第 9 節),且確認框要列出「連同 N 個任務、N 個雲端檔案」——刪除 handler 範例見 `deleteApplianceFromCard`。
+
+### C. 顯示用友善標籤,原始資料塞 `title`
+
+Drive 檔名是 `<家電名>-說明書-DR_TST_MFL69783871_03_...pdf` 這種機器名,直接當連結文字又長又醜。改成友善標籤(單份「說明書」、多份「說明書 1/2」),原始檔名放 `title={f.name}`(滑鼠 hover 看得到),資訊不丟失:
+
+```tsx
+const label = arr.length > 1 ? `說明書 ${idx + 1}` : "說明書";
+// <a title={f.name ?? "說明書"}>...{label}...</a>
+```
+
+> 拆「收據/保固卡」成兩個獨立上傳區(新增 `warranty_card` kind)的全觸點清單,見 `system-drive` 的「Next.js 子表時代修正 B」。
+
+---
+
+## 參考既有檔案(註:Python 檔已刪,現為 Next.js)
+
+> ⚠️ 本檔第 1-11 節多為**舊 Python/FastAPI + 單一 HTML 時代**寫的(`appliances.py`、`main.py`、`static/appliances.html` 已不存在),**概念仍適用**(雙表設計、FK cascade、徽章邏輯、cascade 透明顯示),但實作位置改成下面的 Next.js 檔:
+
+- `web/src/lib/appliances.ts` — 雙表領域層(型別 + Supabase CRUD + `markTaskDone` + `deleteAppliance` 連帶清 Drive)
+- `web/src/app/appliances/page.tsx` — 卡片 + 底部滑出 modal + 任務子清單 + 聯絡資訊分類別子表 + MultiUpload 上傳區
+- `web/src/lib/applianceFiles.ts` / `applianceContacts.ts` / `applianceContactFiles.ts` — 子表 / 孫表領域層
+- `web/src/app/api/appliances/...` 與 `appliance-files/route.ts` 等 — 扁平路徑 + Drive 命名
