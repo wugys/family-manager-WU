@@ -185,6 +185,7 @@ export default function AppliancesPage() {
     photo: false,
     manual: false,
     receipt: false,
+    warranty_card: false,
   });
   // Ctrl+V 貼上要丟到哪個上傳區(滑鼠移到 / 點到該區時設定)
   const [activeUploadKind, setActiveUploadKind] = useState<FileKind>("photo");
@@ -576,6 +577,7 @@ export default function AppliancesPage() {
         photo: true,
         manual: true,
         receipt: true,
+        warranty_card: true,
       }));
 
       // 步驟 1:先儲存家電基本資料
@@ -610,6 +612,10 @@ export default function AppliancesPage() {
         ...(pending.photo ?? []).map((p) => ({ file: p.file, kind: "photo" as const })),
         ...(pending.manual ?? []).map((p) => ({ file: p.file, kind: "manual" as const })),
         ...(pending.receipt ?? []).map((p) => ({ file: p.file, kind: "receipt" as const })),
+        ...(pending.warranty_card ?? []).map((p) => ({
+          file: p.file,
+          kind: "warranty_card" as const,
+        })),
       ];
 
       for (const { file, kind } of allUploads) {
@@ -631,7 +637,7 @@ export default function AppliancesPage() {
       }
 
       // 步驟 3:清空暫存、刷新、關閉
-      clearPending("photo", "manual", "receipt");
+      clearPending("photo", "manual", "receipt", "warranty_card");
 
       await loadAppliances();
 
@@ -645,6 +651,7 @@ export default function AppliancesPage() {
         photo: false,
         manual: false,
         receipt: false,
+        warranty_card: false,
       }));
     }
   }
@@ -666,6 +673,29 @@ export default function AppliancesPage() {
       return;
     }
     closeModal();
+    await loadAppliances();
+  }
+
+  // 從卡片直接刪除家電(連同任務 / 聯絡資訊 / Drive 上的所有上傳檔)
+  async function deleteApplianceFromCard(a: Appliance) {
+    const taskCount = tasksOf(a.id).length;
+    const fileCount = (filesByAppliance[a.id] ?? []).length;
+    const extras = [
+      taskCount > 0 ? `${taskCount} 個保養/耗材任務` : null,
+      fileCount > 0 ? `${fileCount} 個雲端檔案` : null,
+    ].filter(Boolean);
+    const msg =
+      extras.length > 0
+        ? `確定要刪除「${a.name}」?連同 ${extras.join(
+            "、",
+          )}一起刪掉,雲端硬碟上的檔案也會移除,無法復原。`
+        : `確定要刪除「${a.name}」?無法復原。`;
+    if (!confirm(msg)) return;
+    const res = await fetch(`${API_APPLIANCES}/${a.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      alert("刪除失敗");
+      return;
+    }
     await loadAppliances();
   }
 
@@ -955,6 +985,7 @@ export default function AppliancesPage() {
                 photoUrl={filesOf(a.id, "photo")[0]?.url ?? null}
                 onOpenTasks={() => openTasksModal(a)}
                 onEdit={() => openEditModal(a)}
+                onDelete={() => deleteApplianceFromCard(a)}
               />
             ))}
           </div>
@@ -1183,7 +1214,7 @@ export default function AppliancesPage() {
 
                     {/* 收據上傳(可多張,保固求償用,過保與否都可留存)*/}
                     <MultiUpload
-                      label="收據 / 保固卡照片"
+                      label="購買收據"
                       accept="image/*,.pdf"
                       files={filesOf(modalApplianceId, "receipt")}
                       pending={pending.receipt ?? []}
@@ -1191,6 +1222,21 @@ export default function AppliancesPage() {
                       onActivate={() => setActiveUploadKind("receipt")}
                       onAddFiles={(files) => addPending("receipt", files)}
                       onRemovePending={(idx) => removePending("receipt", idx)}
+                      onDelete={removeFile}
+                    />
+
+                    {/* 保固卡上傳(跟收據分開,雲端命名為「保固卡」)*/}
+                    <MultiUpload
+                      label="保固卡"
+                      accept="image/*,.pdf"
+                      files={filesOf(modalApplianceId, "warranty_card")}
+                      pending={pending.warranty_card ?? []}
+                      uploading={uploading.warranty_card}
+                      onActivate={() => setActiveUploadKind("warranty_card")}
+                      onAddFiles={(files) => addPending("warranty_card", files)}
+                      onRemovePending={(idx) =>
+                        removePending("warranty_card", idx)
+                      }
                       onDelete={removeFile}
                     />
 
@@ -1694,6 +1740,47 @@ export default function AppliancesPage() {
                       ))}
                     </div>
                   )}
+
+                  {/* 說明書區:任務頁籤下方常駐顯示,直接連到已上傳的說明書檔
+                      (唯讀;要新增 / 刪除說明書到「✎ 編輯家電」的基本資料頁籤) */}
+                  {filesOf(modalApplianceId, "manual").length > 0 && (
+                    <div className="mt-6 pt-4 border-t border-slate-200">
+                      <h3 className="font-bold mb-2">
+                        📖 說明書{" "}
+                        <span className="text-slate-500 font-normal text-sm">
+                          ({filesOf(modalApplianceId, "manual").length})
+                        </span>
+                      </h3>
+                      <div className="space-y-2">
+                        {filesOf(modalApplianceId, "manual").map((f, idx, arr) => {
+                          const isPdf = (f.name ?? "")
+                            .toLowerCase()
+                            .endsWith(".pdf");
+                          // 連結文字用友善標籤(多份才編號),原始雲端檔名移到 hover 提示
+                          const label =
+                            arr.length > 1 ? `說明書 ${idx + 1}` : "說明書";
+                          return (
+                            <a
+                              key={f.id}
+                              href={f.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={f.name ?? "說明書"}
+                              className="flex items-center gap-3 bg-white border border-slate-200 rounded-lg p-3 hover:bg-slate-50 active:scale-[0.98] transition"
+                            >
+                              <span className="text-2xl shrink-0">
+                                {isPdf ? "📄" : "🖼"}
+                              </span>
+                              <span className="flex-1 min-w-0 text-sm text-blue-600 truncate">
+                                {label}
+                              </span>
+                              <span className="text-slate-300 shrink-0">›</span>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
                   )}
                 </>
@@ -1712,12 +1799,14 @@ function ApplianceCard({
   photoUrl,
   onOpenTasks,
   onEdit,
+  onDelete,
 }: {
   a: Appliance;
   tasks: ApplianceTask[];
   photoUrl: string | null;
   onOpenTasks: () => void;
   onEdit: () => void;
+  onDelete: () => void;
 }) {
   const overdue = tasks.filter((t) => {
     const d = daysFromToday(t.next_due_date);
@@ -1817,7 +1906,20 @@ function ApplianceCard({
           {meta && <p className="text-xs text-slate-500 mt-1">{meta}</p>}
           <p className={`mt-2 text-xs ${taskSummary.color}`}>{taskSummary.text}</p>
         </div>
-        <span className="text-slate-300 text-xl shrink-0">›</span>
+        <div className="flex flex-col items-center justify-between self-stretch shrink-0">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="text-slate-300 hover:text-red-600 p-1 -mr-1 -mt-1"
+            title="刪除這台家電(連同雲端檔案)"
+          >
+            🗑
+          </button>
+          <span className="text-slate-300 text-xl">›</span>
+        </div>
       </div>
     </div>
   );

@@ -1,12 +1,13 @@
 // 家電檔案(appliance_files)領域模組。
 // 一台家電的每個「上傳區」(kind)可放多個檔案,統一存這張子表:
-//   kind = 'photo'(家電照片,第一張當主頁卡片頭貼)/ 'manual'(說明書)/ 'receipt'(購買收據)
+//   kind = 'photo'(家電照片,第一張當主頁卡片頭貼)/ 'manual'(說明書)
+//        / 'receipt'(購買收據)/ 'warranty_card'(保固卡)
 // 對應 Supabase 表 appliance_files(FK appliance_id on delete cascade)。
 // 實際的 Drive 上傳 / 刪除在 route handler 做,這裡只管 DB。
 import { getClient } from "./supabase";
 
 // 上傳區種類;前端 MultiUpload 元件用
-export const FILE_KINDS = ["photo", "manual", "receipt"] as const;
+export const FILE_KINDS = ["photo", "manual", "receipt", "warranty_card"] as const;
 export type FileKind = (typeof FILE_KINDS)[number];
 
 export interface ApplianceFileCreate {

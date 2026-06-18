@@ -7,6 +7,8 @@
 import { getClient } from "./supabase";
 import { deleteFileByUrl } from "./drive";
 import { listFiles } from "./applianceFiles";
+import { listContacts } from "./applianceContacts";
+import { listContactFiles } from "./applianceContactFiles";
 
 // 任務類型 task_type 的合法值;前端 datalist 預設選項用
 export const TASK_TYPE_OPTIONS = ["清潔", "保養", "耗材更換", "其他"];
@@ -142,15 +144,27 @@ export async function updateAppliance(
 }
 
 // 刪除家電;DB 層 ON DELETE CASCADE 會連帶刪該家電底下所有任務 / 聯絡資訊 / 檔案紀錄。
-// Drive 端的所有上傳檔(照片 / 說明書 / 收據)一併刪除(失敗不擋 DB 流程)。
+// Drive 端的所有上傳檔一併刪除(失敗不擋 DB 流程):
+//   1) 家電本身的照片 / 說明書 / 收據(appliance_files)
+//   2) 聯絡資訊(店家)底下的價目表(appliance_contact_files)—— DB cascade 會刪紀錄,
+//      但 Drive 實體檔不會自己消失,所以這裡要先一筆筆撈出來刪掉,避免孤兒檔
 export async function deleteAppliance(id: number): Promise<boolean> {
   const current = await getAppliance(id);
   if (current === null) return false;
 
-  // 先把這台家電在 Drive 上的所有檔案刪掉,避免孤兒檔
+  // 1) 家電本身的上傳檔(照片 / 說明書 / 收據)
   const files = await listFiles(id);
   for (const f of files) {
     if (f.url) await deleteFileByUrl(f.url);
+  }
+
+  // 2) 各聯絡資訊底下的價目表檔
+  const contacts = await listContacts(id);
+  for (const c of contacts) {
+    const contactFiles = await listContactFiles(c.id);
+    for (const f of contactFiles) {
+      if (f.url) await deleteFileByUrl(f.url);
+    }
   }
 
   const { data, error } = await getClient()

@@ -12,6 +12,7 @@ const KIND_LABEL: Record<string, string> = {
   photo: "家電照片",
   manual: "說明書",
   receipt: "購買收據",
+  warranty_card: "保固卡",
 };
 
 export async function GET(request: Request) {
@@ -39,7 +40,7 @@ export async function POST(request: Request) {
     }
     if (!(kind in KIND_LABEL)) {
       return NextResponse.json(
-        { detail: "kind 必須是 photo、manual 或 receipt" },
+        { detail: "kind 必須是 photo、manual、receipt 或 warranty_card" },
         { status: 422 },
       );
     }
